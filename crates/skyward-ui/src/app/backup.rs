@@ -191,6 +191,28 @@ mod tests {
     use crate::app::testing::*;
 
     #[test]
+    fn individual_backup_submits_only_the_selected_partition() {
+        let (f, i) = (fonts(), info());
+        let mut app = opened(Screen::Backup, &f, &i);
+        app.data_waiting(None);
+        assert_eq!(tap(&mut app, &f, &i, Action::BackupIndividual), vec![Effect::ReadBackupItems]);
+        app.state.backup_items = Some(Ok(vec![("dtbo".into(), 4096, false), ("vbmeta".into(), 4096, false)]));
+        app.refresh();
+        assert!(swipe(&mut app, &f, &i, Confirm::Backup).is_empty());
+        tap(&mut app, &f, &i, Action::BackupItem(1));
+        assert_eq!(swipe(&mut app, &f, &i, Confirm::Backup), vec![Effect::Backup {
+            partitions: vec!["vbmeta".into()],
+            parts: [true, true, false, false, true],
+            place: Place::Storage,
+            compress: false,
+            verify: true,
+        }]);
+        tap(&mut app, &f, &i, Action::BackupIndividual);
+        assert!(app.state.backup_items.is_none());
+        assert_eq!(app.state.backup, [true, true, false, false, true]);
+    }
+
+    #[test]
     fn a_backup_takes_what_is_ticked_to_where_it_is_sent() {
         let (f, i) = (fonts(), info());
         let mut app = opened(Screen::Backup, &f, &i);
