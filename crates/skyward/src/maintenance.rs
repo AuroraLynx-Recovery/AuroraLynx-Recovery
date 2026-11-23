@@ -313,6 +313,12 @@ fn install_module(manager: RootManager, archive: &Path) -> Result<()> {
     ensure!(Path::new(program).is_file(), "{manager:?} installer is unavailable ({program})");
     use std::process::{Command, Stdio};
     let (mut reader, writer) = io::pipe()?;
+    use std::os::fd::AsRawFd;
+    // Only the reader is nonblocking. The installer still gets ordinary
+    // blocking stdout and stderr.
+    if unsafe { libc::fcntl(reader.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) } < 0 {
+        return Err(io::Error::last_os_error()).context("configure installer diagnostics");
+    }
     let stderr = writer.try_clone()?;
     let mut child = Command::new(program)
         .args(manager.arguments())
@@ -322,9 +328,8 @@ fn install_module(manager: RootManager, archive: &Path) -> Result<()> {
         .stderr(stderr)
         .spawn()
         .with_context(|| format!("start {manager:?} module installer"))?;
-    let output = installer_output(&mut reader);
-    let status = child.wait().with_context(|| format!("wait for {manager:?} module installer"))?;
-    let output = output?;
+    let (status, output) = installer_output(&mut reader, &mut child)
+        .with_context(|| format!("collect {manager:?} module installer result"))?;
     if !output.is_empty() {
         println!("{output}");
     }
@@ -337,21 +342,44 @@ fn install_module(manager: RootManager, archive: &Path) -> Result<()> {
 
 /// Retain bounded diagnostics while draining both streams so verbose module
 /// scripts do not block or allocate memory proportional to their output.
-fn installer_output(mut reader: impl Read) -> io::Result<String> {
+fn installer_output(
+    mut reader: impl Read,
+    child: &mut std::process::Child,
+) -> io::Result<(std::process::ExitStatus, String)> {
     const LIMIT: usize = 4096;
     let mut tail = Vec::with_capacity(LIMIT * 2);
     let mut buffer = [0; LIMIT];
-    loop {
-        let count = reader.read(&mut buffer)?;
-        if count == 0 {
-            break;
+    let mut after_exit = 16;
+    let status = loop {
+        let status = child.try_wait()?;
+        match reader.read(&mut buffer) {
+            Ok(0) => break child.wait()?,
+            Ok(count) => {
+                tail.extend_from_slice(&buffer[..count]);
+                if tail.len() > LIMIT {
+                    tail.drain(..tail.len() - LIMIT);
+                }
+                if let Some(status) = status {
+                    // A script may have left a descendant with this pipe
+                    // open. Read the remaining buffered output with a cap.
+                    after_exit -= 1;
+                    if after_exit == 0 {
+                        break status;
+                    }
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                if let Some(status) = status {
+                    break status;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
         }
-        tail.extend_from_slice(&buffer[..count]);
-        if tail.len() > LIMIT {
-            tail.drain(..tail.len() - LIMIT);
-        }
-    }
-    Ok(String::from_utf8_lossy(&tail).chars()
+    };
+    let text = String::from_utf8_lossy(&tail).chars()
         .filter(|ch| !ch.is_control() || *ch == '\n' || *ch == '\t')
-        .collect::<String>().trim().to_string())
+        .collect::<String>().trim().to_string();
+    Ok((status, text))
 }
