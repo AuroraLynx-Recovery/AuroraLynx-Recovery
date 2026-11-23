@@ -1,3 +1,7 @@
+# AuroraLynx Recovery
+
+See the [AuroraLynx source provenance and development notes](docs/UPSTREAM.md). The original Skyward documentation follows.
+
 ![Skyward Recovery](assets/hero.jpg)
 
 # Skyward

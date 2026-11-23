@@ -1,3 +1,9 @@
+# AuroraLynx Recovery
+
+[源码来源与开发说明](docs/UPSTREAM.md) · [Material 3 Expressive](docs/material-3-expressive.md)
+
+以下为上游 Skyward 文档。
+
 ![Skyward Recovery](assets/hero.jpg)
 
 # Skyward
