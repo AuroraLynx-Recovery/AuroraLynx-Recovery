@@ -67,10 +67,14 @@ impl Lock {
 
     #[cfg(target_os = "android")]
     pub fn reset_with_recovery_code(&mut self, code: &[u8], replacement: &[u8]) -> Result<Attempt> {
-        let attempt = self.attempt_recovery_code(code)?;
+        self.reset_with(code, replacement, |lock| lock.write())
+    }
+
+    fn reset_with(&mut self, code: &[u8], replacement: &[u8], save: impl Fn(&Self) -> Result<()>) -> Result<Attempt> {
+        let attempt = self.check_with(code, |lock| lock.recovery.as_ref(), &save)?;
         if matches!(attempt, Attempt::Unlocked) {
             let next = Self::new(self.kind(), replacement)?;
-            next.write()?;
+            save(&next)?;
             *self = next;
         }
         Ok(attempt)
@@ -273,6 +277,26 @@ mod tests {
         assert_eq!(Lock::read(&path).unwrap().unwrap().failures, 1);
         assert!(matches!(loaded.check_with(code.as_bytes(), |lock| lock.recovery.as_ref(), save).unwrap(), Attempt::Unlocked));
         assert_eq!(Lock::read(&path).unwrap().unwrap().failures, 0);
+    }
+
+
+    #[test]
+    fn resetting_with_a_recovery_code_replaces_the_primary_and_invalidates_the_code() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recovery.lock");
+        let save = |lock: &Lock| lock.write_to(&path);
+        let mut lock = Lock::new(Kind::Pin, b"123456").unwrap();
+        let (_, code) = lock.issue_with(b"123456", save).unwrap();
+        let code = code.unwrap();
+        assert!(matches!(lock.reset_with(b"wrong", b"987654", save).unwrap(), Attempt::Wrong));
+        assert!(lock.reset_with(code.as_bytes(), b"123", save).is_err());
+        let mut lock = Lock::read(&path).unwrap().unwrap();
+        assert!(lock.has_recovery_code());
+        assert!(matches!(lock.reset_with(code.as_bytes(), b"987654", save).unwrap(), Attempt::Unlocked));
+        let mut lock = Lock::read(&path).unwrap().unwrap();
+        assert!(!lock.has_recovery_code());
+        assert!(matches!(lock.check(b"123456", save).unwrap(), Attempt::Wrong));
+        assert!(matches!(lock.check(b"987654", save).unwrap(), Attempt::Unlocked));
     }
 
 }
