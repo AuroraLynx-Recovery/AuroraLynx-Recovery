@@ -2497,14 +2497,23 @@ fn module_zip(cx: &Ctx) -> Frame {
         widgets::paragraph(&mut c, t, f, top, label);
         return Frame::new(t, c, Vec::new(), title, top);
     }
-    let label = if zh { "输入模块 ZIP 的绝对路径，确认后运行安装脚本" }
-        else { "Enter the module ZIP's absolute path to run its installer" };
-    let y = widgets::paragraph(&mut c, t, f, top, label);
+    let places: Vec<_> = [Place::Storage, Place::UsbDrive].into_iter().filter(|place| s.place_open(*place)).collect();
+    let mut out = Vec::new();
+    let mut y = top;
+    if !places.is_empty() {
+        let rows: Vec<_> = places.iter().map(|place| Row::new(place_name(l, *place)).icon(BLUE, Icon::Folder)).collect();
+        let list = widgets::list(&mut c, t, f, top, &rows);
+        let actions: Vec<_> = places.iter().map(|place| Action::Open(Screen::Choose(*place))).collect();
+        out.extend(hits(&list.rows, &actions));
+        y = list.bottom + t.m.card_gap;
+    }
+    let label = if zh { "选择 ZIP 或输入绝对路径，确认后运行安装脚本" }
+        else { "Choose a ZIP or enter its absolute path to run its installer" };
+    let y = widgets::paragraph(&mut c, t, f, y, label);
     let (y, caret) = widgets::text_field(&mut c, t, f, y, &s.module_zip);
     if let Some(Err(error)) = &s.module_zip_result {
         widgets::footnote(&mut c, t, f, y, error);
     }
-    let mut out = Vec::new();
     keyboard_hits(&mut c, t, f, s, if zh { "安装" } else { "Install" }, &mut out);
     Frame { caret: Some(caret), ..Frame::new(t, c, out, title, top) }
 }

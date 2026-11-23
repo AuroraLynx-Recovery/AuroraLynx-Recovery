@@ -2915,6 +2915,10 @@ impl Pages<'_> {
                     }
                 }
             }
+            Effect::SetModuleZip { place, path } => {
+                self.app.state.module_zip = in_place(place, &path).to_string_lossy().into_owned();
+                self.app.refresh();
+            }
             Effect::InstallModuleZip { manager, path } => {
                 use crate::maintenance::{ModuleAction, RootManager};
                 use skyward_ui::app::ModuleManager;

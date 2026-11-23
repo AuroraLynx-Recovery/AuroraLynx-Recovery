@@ -295,6 +295,7 @@ impl App {
         let parent = self.stack.iter().rev().nth(1).map(|page| page.0);
         let file_extension = match parent {
             Some(Screen::PartitionFlash) => Some("img"),
+            Some(Screen::ModuleZip) => Some("zip"),
             Some(Screen::Install) if self.stack.first().is_some_and(|p| p.0 == Screen::Regular) => Some("zip"),
             _ => None,
         };
@@ -422,6 +423,22 @@ mod tests {
         assert_eq!(app.state.file, None);
         assert!(app.key(Key::Back, 0).is_empty(), "at the root, back leaves");
         assert_eq!(app.screen(), Screen::Advanced);
+    }
+
+    #[test]
+    fn module_zip_picker_filters_images_and_returns_without_installing() {
+        let (f, i) = (fonts(), info());
+        let mut app = App::new(Screen::ModuleZip, W, H, PPD);
+        app.data_waiting(None);
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Choose(Place::Storage))),
+            vec![Effect::ReadPlace(Place::Storage, String::new())]);
+        app.set_place(Place::Storage, String::new(),
+            Ok(vec![entry("boot.img", FileKind::File), entry("module.ZIP", FileKind::File)]), LISTED);
+        assert_eq!(app.state.storage.entries.as_ref().unwrap().len(), 1);
+        assert_eq!(tap(&mut app, &f, &i, Action::ChooseEntry(0)),
+            vec![Effect::SetModuleZip { place: Place::Storage, path: "module.ZIP".into() }]);
+        assert_eq!(app.screen(), Screen::ModuleZip);
+        assert!(!app.state.module_zip_busy);
     }
 
     #[test]

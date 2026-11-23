@@ -550,6 +550,7 @@ pub enum Effect {
     UseRecoveryCode,
     ReadRootModules,
     InstallModuleZip { manager: ModuleManager, path: String },
+    SetModuleZip { place: Place, path: String },
     ChangeRootModule { id: String, change: ModuleChange },
     ReadExtractPartitions,
     SetExtractFolder { place: Place, folder: String },

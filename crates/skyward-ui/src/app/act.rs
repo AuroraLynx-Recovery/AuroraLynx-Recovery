@@ -511,6 +511,13 @@ impl App {
                         if self.state.wallpaper_browsing {
                             return vec![Effect::ImportWallpaper(place, path)];
                         }
+                        if self.stack.iter().rev().nth(1).is_some_and(|page| page.0 == Screen::ModuleZip) {
+                            self.leave(true);
+                            self.stack.pop();
+                            self.settle_page();
+                            self.refresh();
+                            return vec![Effect::SetModuleZip { place, path }];
+                        }
                         if !self.state.extract_browsing {
                             return self.install_file(place, path, entry.size, now);
                         }
