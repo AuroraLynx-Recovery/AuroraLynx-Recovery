@@ -1,0 +1,321 @@
+use anyhow::{ensure, Context, Result};
+use std::collections::BTreeSet;
+use std::ffi::CString;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read};
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
+
+fn valid_name(name: &str) -> bool {
+    !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'.')
+        && name != "." && name != ".."
+}
+
+/// A partition that can be selected in the extractor.
+struct ExportSource {
+    name: String,
+    path: Option<PathBuf>,
+    size: u64,
+}
+
+fn export_sources(slot: Option<skyward_vab::Slot>) -> Result<Vec<ExportSource>> {
+    let mut catalog = Vec::new();
+    for part in skyward_block::list_by_name(skyward_block::BY_NAME)? {
+        if valid_name(&part.name) && let Ok(size) = skyward_block::size_bytes(&part.path) && size != 0 {
+            catalog.push(ExportSource { name: part.name, path: Some(part.path), size });
+        }
+    }
+    // Physical partition discovery still works if super is absent or damaged.
+    if let Some(slot) = slot && let Ok(entries) = skyward_vab::slot_sizes(slot) {
+        for (name, size) in entries {
+            if size != 0 && valid_name(&name) && !catalog.iter().any(|source| source.name == name) {
+                catalog.push(ExportSource { name, path: None, size });
+            }
+        }
+    }
+    catalog.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(catalog)
+}
+
+pub fn partition_catalog() -> Result<Vec<(String, u64)>> {
+    Ok(export_sources(skyward_vab::current_slot()?)?.into_iter().map(|source| (source.name, source.size)).collect())
+}
+
+pub fn list_partitions() -> Result<()> {
+    for source in export_sources(skyward_vab::current_slot()?)? {
+        println!("{}\t{}", source.name, source.size);
+    }
+    Ok(())
+}
+
+pub fn extract(output: &Path, names: &[String]) -> Result<()> {
+    ensure!(!names.is_empty(), "choose at least one partition");
+    ensure!(output.is_dir(), "choose an existing output directory");
+    let output = output.canonicalize().context("resolve extraction directory")?;
+    let usb = Path::new(skyward_ui::app::USB_DRIVE);
+    if output.starts_with(usb) {
+        ensure!(skyward_block::mount::is_mount_point(usb)?, "the USB drive is no longer mounted");
+    }
+    let slot = skyward_vab::current_slot()?;
+    let catalog = export_sources(slot)?;
+    let mut seen = BTreeSet::new();
+    let mut sources = Vec::new();
+    let mut needed = 0u64;
+    for name in names {
+        ensure!(valid_name(name) && seen.insert(name), "invalid or duplicate partition {name:?}");
+        let filename = output.join(format!("{name}.img"));
+        match filename.symlink_metadata() {
+            Ok(_) => anyhow::bail!("{} already exists", filename.display()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error).with_context(|| format!("check {}", filename.display())),
+        }
+        let source = catalog.iter().find(|source| &source.name == name)
+            .with_context(|| format!("unknown or unreadable partition {name}"))?;
+        needed = needed.checked_add(source.size).context("partition size total overflow")?;
+        sources.push((name, filename, source));
+    }
+    if sources.iter().any(|(name, _, source)| source.path.is_none() || name.as_str() == "super") {
+        ensure!(!skyward_vab::merge_outstanding()?, "a Virtual A/B update may still be using super");
+    }
+    let available = skyward_block::mount::space(&output)?.available;
+    ensure!(needed <= available, "extraction needs {needed} bytes, but only {available} are available");
+    for (name, filename, source) in sources {
+        let mapping = if source.path.is_none() {
+            Some(skyward_vab::map_whole(slot.context("no active slot")?, name, &format!("skyward-extract-{}", std::process::id()), true)?)
+        } else {
+            None
+        };
+        let path = source.path.as_deref().or_else(|| mapping.as_ref().map(|m| m.device.as_path())).context("missing partition source")?;
+        let result = copy_image(path, &filename);
+        let cleanup = mapping.as_ref().map(skyward_vab::unmap_whole).transpose();
+        result?;
+        cleanup?;
+        println!("{}", filename.display());
+    }
+    Ok(())
+}
+
+fn copy_image(input: &Path, output: &Path) -> Result<()> {
+    let bytes = skyward_block::size_bytes(input)?;
+    let mut input = File::open(input)?.take(bytes);
+    let partial = output.with_extension(format!("img.{}.part", std::process::id()));
+    let mut file = skyward_files::make_file(&partial, crate::ui::ownership(output.parent().context("missing output directory")?)?)?;
+    let result = (|| -> Result<()> {
+        ensure!(io::copy(&mut input, &mut file)? == bytes, "partition read ended early");
+        file.sync_all()?;
+        publish_image(&partial, output)
+    })();
+    if let Err(error) = result {
+        return match fs::remove_file(&partial) {
+            Ok(()) => Err(error),
+            Err(cleanup) => Err(error.context(format!("remove {}: {cleanup}", partial.display()))),
+        };
+    }
+    Ok(())
+}
+
+/// Rename on the same filesystem without overwriting, including on vfat and exFAT.
+fn publish_image(partial: &Path, output: &Path) -> Result<()> {
+    let from = CString::new(partial.as_os_str().as_bytes())?;
+    let to = CString::new(output.as_os_str().as_bytes())?;
+    let status = unsafe {
+        libc::syscall(libc::SYS_renameat2, libc::AT_FDCWD, from.as_ptr(), libc::AT_FDCWD, to.as_ptr(), libc::RENAME_NOREPLACE)
+    };
+    if status != 0 {
+        return Err(io::Error::last_os_error()).with_context(|| format!("publish {}", output.display()));
+    }
+    Ok(())
+}
+
+#[derive(clap::Subcommand)]
+pub enum ModuleAction {
+    List,
+    /// Install a module ZIP through the selected installed manager.
+    Install { #[arg(value_enum)] manager: RootManager, zip: PathBuf },
+    /// Show the installed module metadata and its current boot flags.
+    Info { id: String },
+    Enable { id: String },
+    Disable { id: String },
+    Remove { id: String },
+    CancelRemoval { id: String },
+}
+
+pub fn modules(action: ModuleAction) -> Result<()> {
+    let root = Path::new("/data/adb/modules");
+    ensure!(skyward_block::mount::is_mount_point(Path::new("/data"))?, "open /data first");
+    if let ModuleAction::Install { manager, zip } = action {
+        return install_module(manager, &zip);
+    }
+    ensure!(root.symlink_metadata()?.is_dir(), "module directory is unavailable");
+    let (id, flag, set) = match action {
+        ModuleAction::Install { .. } => unreachable!("install handled before opening module directory"),
+        ModuleAction::Info { id } => return module_info(root, &id),
+        ModuleAction::List => {
+            let mut installed = Vec::new();
+            for entry in fs::read_dir(root)? {
+                let entry = entry?;
+                if entry.file_type()?.is_dir() && entry.path().join("module.prop").symlink_metadata().is_ok_and(|m| m.is_file()) {
+                    installed.push(entry.file_name());
+                }
+            }
+            installed.sort();
+            for id in installed {
+                let module = root.join(&id);
+                println!("{}\t{}", id.to_string_lossy(), module_state(&module));
+            }
+            return Ok(());
+        }
+        ModuleAction::Enable { id } => (id, "disable", false),
+        ModuleAction::Disable { id } => (id, "disable", true),
+        ModuleAction::Remove { id } => (id, "remove", true),
+        ModuleAction::CancelRemoval { id } => (id, "remove", false),
+    };
+    let module = module_path(root, &id)?;
+    let flag = module.join(flag);
+    match flag.symlink_metadata() {
+        Ok(meta) => {
+            ensure!(meta.is_file(), "invalid module marker {}", flag.display());
+            if !set {
+                fs::remove_file(flag)?;
+            }
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            if set {
+                let file = OpenOptions::new().write(true).create_new(true).mode(0o600).open(flag)?;
+                file.sync_all()?;
+            }
+        }
+        Err(error) => return Err(error.into()),
+    }
+    File::open(module)?.sync_all()?;
+    Ok(())
+}
+
+fn module_path(root: &Path, id: &str) -> Result<PathBuf> {
+    ensure!(valid_name(id), "invalid module ID");
+    let module = root.join(id);
+    ensure!(module.symlink_metadata()?.is_dir() && module.join("module.prop").symlink_metadata()?.is_file(), "not an installed module");
+    Ok(module)
+}
+
+fn module_state(module: &Path) -> &'static str {
+    if module.join("remove").symlink_metadata().is_ok() {
+        "pending removal"
+    } else if module.join("disable").symlink_metadata().is_ok() {
+        "disabled"
+    } else {
+        "enabled"
+    }
+}
+
+pub fn module_catalog() -> Result<Vec<skyward_ui::app::RootModule>> {
+    use skyward_ui::app::RootModule;
+    ensure!(skyward_block::mount::is_mount_point(Path::new("/data"))?, "open /data first");
+    let root = Path::new("/data/adb/modules");
+    match root.symlink_metadata() {
+        Ok(metadata) => ensure!(metadata.is_dir(), "module directory is unavailable"),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    }
+    let mut modules = Vec::new();
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let Ok(id) = entry.file_name().into_string() else { continue };
+        let Ok(module) = module_path(root, &id) else { continue };
+        modules.push(RootModule {
+            properties: module_properties(&module)?,
+            disabled: module.join("disable").symlink_metadata().is_ok(),
+            removing: module.join("remove").symlink_metadata().is_ok(),
+            pending_update: pending_update(root, &module, &id),
+            id,
+        });
+    }
+    modules.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(modules)
+}
+
+fn pending_update(root: &Path, module: &Path, id: &str) -> bool {
+    if module.join("update").symlink_metadata().is_ok_and(|meta| meta.is_file()) {
+        return true;
+    }
+    let staging = root.with_file_name("modules_update");
+    staging.symlink_metadata().is_ok_and(|meta| meta.is_dir()) && module_path(&staging, id).is_ok()
+}
+
+fn module_info(root: &Path, id: &str) -> Result<()> {
+    let module = module_path(root, id)?;
+    println!("id={id}");
+    println!("state={}", module_state(&module));
+    println!("pending_update={}", pending_update(root, &module, id));
+    for (key, value) in module_properties(&module)? {
+        println!("{key}={value}");
+    }
+    Ok(())
+}
+
+fn module_properties(module: &Path) -> Result<Vec<(String, String)>> {
+    let property = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(module.join("module.prop"))?;
+    let mut contents = String::new();
+    property.take(65537).read_to_string(&mut contents)?;
+    ensure!(contents.len() <= 65536, "module metadata exceeds 64 KiB");
+    let mut properties = Vec::new();
+    for key in ["name", "version", "versionCode", "author", "description"] {
+        if let Some(value) = contents.lines().filter_map(|line| line.split_once('='))
+            .find_map(|(name, value)| (name.trim() == key).then_some(value.trim()))
+        {
+            let value: String = value.chars().filter(|ch| !ch.is_control()).collect();
+            properties.push((key.to_string(), value));
+        }
+    }
+    Ok(properties)
+}
+
+
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+pub enum RootManager {
+    Magisk,
+    KernelSu,
+    APatch,
+}
+
+impl RootManager {
+    fn program(self) -> &'static str {
+        match self {
+            Self::Magisk => "/data/adb/magisk/magisk",
+            Self::KernelSu => "/data/adb/ksud",
+            Self::APatch => "/data/adb/apd",
+        }
+    }
+
+    fn arguments(self) -> &'static [&'static str] {
+        match self {
+            Self::Magisk => &["--install-module"],
+            Self::KernelSu | Self::APatch => &["module", "install"],
+        }
+    }
+}
+
+fn install_module(manager: RootManager, archive: &Path) -> Result<()> {
+    let archive = archive.canonicalize().context("resolve module ZIP")?;
+    ensure!(archive.is_file(), "select a module ZIP file");
+    let mut zip = zip::ZipArchive::new(File::open(&archive)?).context("open module ZIP")?;
+    let prop = zip.by_name("module.prop").context("ZIP does not contain a root-level module.prop")?;
+    ensure!(prop.is_file() && prop.size() <= 65536, "invalid module.prop in ZIP");
+    let mut properties = String::new();
+    prop.take(65537).read_to_string(&mut properties)?;
+    ensure!(properties.len() <= 65536, "module metadata exceeds 64 KiB");
+    let mut ids = properties.lines().filter_map(|line| line.split_once('=')).filter(|(key, _)| key.trim() == "id");
+    let (_, id) = ids.next().context("module.prop has no ID")?;
+    ensure!(valid_name(id.trim()) && ids.next().is_none(), "invalid or duplicate module ID");
+
+    let program = manager.program();
+    ensure!(Path::new(program).is_file(), "{manager:?} installer is unavailable ({program})");
+    let status = std::process::Command::new(program)
+        .args(manager.arguments())
+        .arg(&archive)
+        .status()
+        .with_context(|| format!("start {manager:?} module installer"))?;
+    ensure!(status.success(), "{manager:?} module installer exited with {status}");
+    Ok(())
+}
