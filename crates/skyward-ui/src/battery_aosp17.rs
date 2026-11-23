@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Vector paths from frameworks/base, android-17.0.0_r1:
-// packages/SystemUI/res/drawable/battery_unified_frame.xml
+// packages/SystemUI/res/drawable/battery_unified_frame{,_bg}.xml
 // packages/SystemUI/res/drawable/battery_unified_attr_charging.xml
 // packages/SystemUI/res/values/strings.xml (battery_unified_frame_path_string).
+// BatteryFillDrawable and BatteryLayersDrawable drive the viewport, fill,
+// layer order and attribution bounds. Text uses the recovery's bundled font.
 
 use crate::canvas::Canvas;
 use crate::color::Rgba;
@@ -12,7 +14,7 @@ use crate::font::Fonts;
 use crate::icons;
 use crate::theme::Theme;
 use std::sync::LazyLock;
-use tiny_skia::{FillRule, Paint, Pixmap, Stroke, Transform};
+use tiny_skia::{BlendMode, FillRule, Paint, Pixmap, PixmapPaint, Stroke, Transform};
 
 pub(crate) const WIDTH_DP: f32 = 24.0;
 const HEIGHT_DP: f32 = 14.0;
@@ -38,21 +40,27 @@ pub(crate) fn draw(c: &mut Canvas, t: &Theme, f: &Fonts, level: u8, charging: bo
     let at = Transform::from_scale(dp, dp);
     paint.set_color_rgba8(track.0, track.1, track.2, track.3);
     icon.fill_path(&BODY_PATH, &paint, FillRule::Winding, at, None);
+    let outline = Stroke { width: 1.5, ..Stroke::default() };
+    paint.set_color_rgba8(fg.0, fg.1, fg.2, 255);
+    icon.stroke_path(&BODY_PATH, &paint, &outline, at, None);
+    icon.fill_path(&TERMINAL_PATH, &paint, FillRule::Winding, at, None);
     if level > 0 {
+        let mut fill_layer = Pixmap::new(w, h).expect("the fill has a pixel extent");
         let mut mask = tiny_skia::Mask::new(w, h).expect("the battery mask has a pixel extent");
         mask.fill_path(&BODY_PATH, FillRule::Winding, true, at);
         let fill = if charging { active } else if level < 20 { low } else { normal };
         paint.set_color_rgba8(fill.0, fill.1, fill.2, 255);
-        let x = 3.5 + (19.0 * (1.0 - f32::from(level.min(100)) / 100.0)).floor();
-        if let Some(rect) = tiny_skia::Rect::from_ltrb(x, 0.0, 22.5, HEIGHT_DP) {
-            icon.fill_rect(rect, &paint, at, Some(&mask));
+        let left = 3.5 + (19.0 * dp * (1.0 - f32::from(level.min(100)) / 100.0)).floor() / dp;
+        if let Some(rect) = tiny_skia::Rect::from_ltrb(left, 0.0, 22.5, HEIGHT_DP) {
+            fill_layer.fill_rect(rect, &paint, at, Some(&mask));
+            let erase = Paint { blend_mode: BlendMode::Clear, anti_alias: true, ..Paint::default() };
+            fill_layer.stroke_path(&BODY_PATH, &erase, &outline, at, None);
+            icon.draw_pixmap(0, 0, fill_layer.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
         }
     }
     paint.set_color_rgba8(fg.0, fg.1, fg.2, 255);
-    icon.stroke_path(&BODY_PATH, &paint, &Stroke { width: 1.5, ..Stroke::default() }, at, None);
-    icon.fill_path(&TERMINAL_PATH, &paint, FillRule::Winding, at, None);
     if charging {
-        let bolt = at.pre_translate(16.6, 4.0).pre_scale(0.3, 0.3);
+        let bolt = at.pre_translate(16.0, 4.0).pre_scale(0.3, 0.3);
         icon.fill_path(&CHARGING_PATH, &paint, FillRule::Winding, bolt, None);
     }
     let mut art = Canvas::new(w, h);
@@ -60,8 +68,16 @@ pub(crate) fn draw(c: &mut Canvas, t: &Theme, f: &Fonts, level: u8, charging: bo
         let pixel = pixel.demultiply();
         out.copy_from_slice(&[pixel.red(), pixel.green(), pixel.blue(), pixel.alpha()]);
     }
-    let (center, number_size) = if charging { (10.0, 7.4) } else { (13.0, 10.0) };
-    art.text_center_in(&f.strong, &level.to_string(), center * dp, 7.0 * dp, number_size * dp,
-        Rgba::rgb(fg.0, fg.1, fg.2), (if charging { 12.0 } else { 18.0 }) * dp);
+    let (center, size, nudge) = if !charging {
+        (13.0, 10.0, 1.5)
+    } else if level < 100 {
+        (10.0, 9.0, 1.25)
+    } else {
+        (10.0, 6.0, 1.0)
+    };
+    let digits = level.min(100).to_string();
+    let width = art.text_width(&f.strong, &digits, size * dp);
+    let baseline = (2.0 + (10.0 + size) / 2.0 - nudge) * dp;
+    art.text(&f.strong, &digits, center * dp - width / 2.0, baseline, size * dp, Rgba::rgb(fg.0, fg.1, fg.2), None);
     c.lay(&art, (right - w as f32).round() as i32, (cy - h as f32 / 2.0).round() as i32, 1.0);
 }

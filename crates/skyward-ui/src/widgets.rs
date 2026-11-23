@@ -335,7 +335,14 @@ pub fn status_bar(c: &mut Canvas, t: &Theme, f: &Fonts, bar: &Bar, ink: Rgba) {
         left -= gap + w;
     }
     if let Some(tenths) = bar.temp {
-        left = speed(c, t, f, &fmt::degrees(tenths), "°C", left - gap, cy, ink);
+        if t.style == UiStyle::MaterialExpressive {
+            let degrees = format!("{}°C", (tenths as f32 / 10.0).round() as i32);
+            let size = m.dp(12.0);
+            left -= gap + c.text_width(&f.status, &degrees, size);
+            c.text_vc(&f.status, &degrees, left, cy, size, ink, None);
+        } else {
+            left = speed(c, t, f, &fmt::degrees(tenths), "°C", left - gap, cy, ink);
+        }
     }
     if let Some(w) = &bar.wlan {
         speed(c, t, f, &w.speed, w.unit, left - gap, cy, ink);
@@ -977,6 +984,10 @@ fn chip(t: &Theme, (cx, cy, r): (f32, f32, f32)) -> (Canvas, i32, i32) {
     let size = (reach * 2.0).ceil() as u32 + 3;
     let mut c = Canvas::new(size, size);
     let (cx, cy) = (cx - x0 as f32, cy - y0 as f32);
+    if t.style == UiStyle::MaterialExpressive {
+        c.fill_circle(cx, cy, r, t.pal.track);
+        return (c, x0, y0);
+    }
     for py in 0..size as i32 {
         for px in 0..size as i32 {
             let d = (px as f32 + 0.5 - cx).hypot(py as f32 + 0.5 - cy) - r;

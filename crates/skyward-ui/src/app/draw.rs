@@ -528,9 +528,10 @@ impl App {
             out.put(&d.canvas, (out.h - d.canvas.h) as i32);
             shine(out, Group::Dock);
         }
+        let chip_opacity = if t.style == UiStyle::MaterialExpressive { 1.0 } else { bar };
         if frame.back {
             let (_, chip, x, y) = self.chip.as_ref().expect("a page's `<` is drawn with it");
-            out.lay(chip, *x, *y, bar);
+            out.lay(chip, *x, *y, chip_opacity);
             if pressing == Some(Action::Back) {
                 widgets::back_held(out, t);
             } else {
@@ -539,7 +540,7 @@ impl App {
         }
         if let Some((glyph, action)) = frame.button {
             let (_, chip, x, y) = self.button_chip.as_ref().expect("a page's round button is drawn with its chip");
-            out.lay(chip, *x, *y, bar);
+            out.lay(chip, *x, *y, chip_opacity);
             if pressing == Some(action) {
                 widgets::button_held(out, t, glyph);
             } else {
