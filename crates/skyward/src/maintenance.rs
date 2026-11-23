@@ -311,11 +311,47 @@ fn install_module(manager: RootManager, archive: &Path) -> Result<()> {
 
     let program = manager.program();
     ensure!(Path::new(program).is_file(), "{manager:?} installer is unavailable ({program})");
-    let status = std::process::Command::new(program)
+    use std::process::{Command, Stdio};
+    let (mut reader, writer) = io::pipe()?;
+    let stderr = writer.try_clone()?;
+    let mut child = Command::new(program)
         .args(manager.arguments())
         .arg(&archive)
-        .status()
+        .stdin(Stdio::null())
+        .stdout(writer)
+        .stderr(stderr)
+        .spawn()
         .with_context(|| format!("start {manager:?} module installer"))?;
-    ensure!(status.success(), "{manager:?} module installer exited with {status}");
+    let output = installer_output(&mut reader);
+    let status = child.wait().with_context(|| format!("wait for {manager:?} module installer"))?;
+    let output = output?;
+    if !output.is_empty() {
+        println!("{output}");
+    }
+    if !status.success() {
+        anyhow::bail!("{manager:?} module installer exited with {status}\n{output}");
+    }
     Ok(())
+}
+
+
+/// Retain bounded diagnostics while draining both streams so verbose module
+/// scripts do not block or allocate memory proportional to their output.
+fn installer_output(mut reader: impl Read) -> io::Result<String> {
+    const LIMIT: usize = 4096;
+    let mut tail = Vec::with_capacity(LIMIT * 2);
+    let mut buffer = [0; LIMIT];
+    loop {
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        tail.extend_from_slice(&buffer[..count]);
+        if tail.len() > LIMIT {
+            tail.drain(..tail.len() - LIMIT);
+        }
+    }
+    Ok(String::from_utf8_lossy(&tail).chars()
+        .filter(|ch| !ch.is_control() || *ch == '\n' || *ch == '\t')
+        .collect::<String>().trim().to_string())
 }
