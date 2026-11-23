@@ -1135,9 +1135,14 @@ fn code(cx: &Ctx, mut c: Canvas, user: u32, keys: Keys, checking: bool) -> Frame
     if keys != Keys::Pattern {
         widgets::code_dots(&mut c, t, x, bottom - m.dp(92.0), s.code.chars().count());
     }
-    if s.recovery_credential && s.recovery_prompt == crate::app::RecoveryPrompt::OfferCode && !checking {
+    if s.recovery_credential && s.recovery_prompt != crate::app::RecoveryPrompt::Primary && !checking {
         let y = bottom - m.dp(34.0);
-        let label = if l == Lang::Hans { "使用恢复码" } else { "Use recovery code" };
+        let label = match (s.recovery_prompt == crate::app::RecoveryPrompt::OfferCode, l == Lang::Hans) {
+            (true, true) => "使用恢复码",
+            (true, false) => "Use recovery code",
+            (false, true) => "返回凭据解锁",
+            (false, false) => "Use password or PIN",
+        };
         c.text_center(&f.heading, label, x, y, m.row_title_px, t.pal.accent);
         out.push(Hit { rect: Rect::new(x - m.dp(100.0), y - m.dp(24.0), m.dp(200.0), m.dp(48.0)), action: Action::UseRecoveryCode });
     } else if !s.recovery_credential {

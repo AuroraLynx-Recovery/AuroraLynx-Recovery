@@ -26,7 +26,7 @@ impl App {
                 return self.arrive_at(s);
             }
             Action::UseRecoveryCode => {
-                if self.state.recovery_credential && self.state.recovery_prompt == RecoveryPrompt::OfferCode {
+                if self.state.recovery_credential && self.state.recovery_prompt != RecoveryPrompt::Primary {
                     return vec![Effect::UseRecoveryCode];
                 }
             }

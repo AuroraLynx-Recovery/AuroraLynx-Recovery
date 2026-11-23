@@ -1209,8 +1209,15 @@ pub fn authenticate_recovery(cfg: &DeviceConfig, font: &Path, mono: &Path, lock:
             let Event::Touch(touch, at) = event else { continue };
             for effect in app.touch(touch, &fonts, at) {
                 if effect == Effect::UseRecoveryCode {
-                    app.state.recovery_prompt = RecoveryPrompt::Code;
-                    app.data_waiting(Some((0, Keys::Letters)));
+                    if app.state.recovery_prompt == RecoveryPrompt::OfferCode && lock.has_recovery_code() {
+                        app.state.recovery_prompt = RecoveryPrompt::Code;
+                        app.data_waiting(Some((0, Keys::Letters)));
+                    } else {
+                        recovery_code = None;
+                        replacement = None;
+                        app.state.recovery_prompt = RecoveryPrompt::OfferCode;
+                        app.data_waiting(Some((0, primary_keys)));
+                    }
                     continue;
                 }
                 if let Effect::Unlock { code, .. } = effect {
