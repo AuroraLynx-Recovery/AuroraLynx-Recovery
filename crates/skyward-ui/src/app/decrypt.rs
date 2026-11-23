@@ -67,6 +67,16 @@ pub enum RecoveryLock {
     Error(String),
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RecoveryPrompt {
+    #[default]
+    Primary,
+    OfferCode,
+    Code,
+    NewCredential,
+    ConfirmCredential,
+}
+
 impl App {
     pub fn recovery_lock_loaded(&mut self, status: Result<Option<Keys>, String>) {
         self.state.recovery_lock_code.clear();

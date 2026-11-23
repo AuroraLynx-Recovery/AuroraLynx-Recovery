@@ -1170,7 +1170,7 @@ fn recovery_keys(lock: &crate::recovery_lock::Lock) -> Keys {
 /// Ask for the recovery credential before running any normal page effects.
 pub fn authenticate_recovery(cfg: &DeviceConfig, font: &Path, mono: &Path, lock: &mut crate::recovery_lock::Lock) -> Result<()> {
     use crate::recovery_lock::Attempt;
-    use skyward_crypto::recovery::Kind;
+    use skyward_ui::app::RecoveryPrompt;
 
     let fonts = Fonts::load(font, 0, mono)?;
     let mut surface = KmsSurface::open("/dev/dri/card0")?;
@@ -1188,7 +1188,13 @@ pub fn authenticate_recovery(cfg: &DeviceConfig, font: &Path, mono: &Path, lock:
     app.take_settings(kept.settings(), lang);
     app.state.recovery_credential = true;
     app.set_screen_corners(cfg.display.corner_radius as f32);
-    app.data_waiting(Some((0, match lock.kind() { Kind::Pin => Keys::Digits, Kind::Password => Keys::Letters })));
+    let primary_keys = recovery_keys(lock);
+    if lock.has_recovery_code() {
+        app.state.recovery_prompt = RecoveryPrompt::OfferCode;
+    }
+    app.data_waiting(Some((0, primary_keys)));
+    let mut recovery_code: Option<String> = None;
+    let mut replacement: Option<String> = None;
     loop {
         let now = monotonic_ms();
         if app.take_dirty() {
@@ -1202,8 +1208,57 @@ pub fn authenticate_recovery(cfg: &DeviceConfig, font: &Path, mono: &Path, lock:
             // Only touchscreen credential entry is offered on this screen.
             let Event::Touch(touch, at) = event else { continue };
             for effect in app.touch(touch, &fonts, at) {
+                if effect == Effect::UseRecoveryCode {
+                    app.state.recovery_prompt = RecoveryPrompt::Code;
+                    app.data_waiting(Some((0, Keys::Letters)));
+                    continue;
+                }
                 if let Effect::Unlock { code, .. } = effect {
-                    let why = match lock.attempt(code.as_bytes())? {
+                    let zh = app.state.lang == Lang::Hans;
+                    let result = match app.state.recovery_prompt {
+                        RecoveryPrompt::Primary | RecoveryPrompt::OfferCode => lock.attempt(code.as_bytes()),
+                        RecoveryPrompt::Code => match lock.attempt_recovery_code(code.as_bytes())? {
+                            Attempt::Unlocked => {
+                                recovery_code = Some(code);
+                                app.state.recovery_prompt = RecoveryPrompt::NewCredential;
+                                app.data_waiting(Some((0, primary_keys)));
+                                continue;
+                            }
+                            rejected => Ok(rejected),
+                        },
+                        RecoveryPrompt::NewCredential => {
+                            replacement = Some(code);
+                            app.state.recovery_prompt = RecoveryPrompt::ConfirmCredential;
+                            app.data_waiting(Some((0, primary_keys)));
+                            continue;
+                        }
+                        RecoveryPrompt::ConfirmCredential => {
+                            if replacement.take().as_deref() != Some(code.as_str()) {
+                                app.state.recovery_prompt = RecoveryPrompt::NewCredential;
+                                app.data_waiting(Some((0, primary_keys)));
+                                let message = if zh { "两次输入不同，请重试" } else { "Entries did not match. Try again." };
+                                app.report(message, monotonic_ms());
+                                continue;
+                            }
+                            let saved = recovery_code.as_ref().context("missing verified recovery code")?;
+                            match lock.reset_with_recovery_code(saved.as_bytes(), code.as_bytes()) {
+                                Ok(Attempt::Unlocked) => return Ok(()),
+                                Ok(rejected) => {
+                                    recovery_code = None;
+                                    app.state.recovery_prompt = RecoveryPrompt::Code;
+                                    app.data_waiting(Some((0, Keys::Letters)));
+                                    Ok(rejected)
+                                }
+                                Err(error) => {
+                                    app.state.recovery_prompt = RecoveryPrompt::NewCredential;
+                                    app.data_waiting(Some((0, primary_keys)));
+                                    app.report(&format!("{error:#}"), monotonic_ms());
+                                    continue;
+                                }
+                            }
+                        }
+                    };
+                    let why = match result? {
                         Attempt::Unlocked => return Ok(()),
                         Attempt::Wrong if app.state.lang == Lang::Hans => "Recovery 凭据错误".to_string(),
                         Attempt::Wrong => "Incorrect recovery credential".to_string(),
@@ -2904,6 +2959,7 @@ impl Pages<'_> {
                     }
                 }
             }
+            Effect::UseRecoveryCode => {}
             Effect::IssueRecoveryCode(credential) => {
                 use crate::recovery_lock::Attempt;
                 let lock = self.recovery_lock.as_mut().context("no recovery credential is configured")?;

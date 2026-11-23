@@ -1084,7 +1084,17 @@ fn code(cx: &Ctx, mut c: Canvas, user: u32, keys: Keys, checking: bool) -> Frame
         (false, user) => texts::decrypt::enter_lock_of(l, user),
     }};
     let note = if s.recovery_credential && !checking {
-        if l == Lang::Hans { "输入 Recovery 密码或 PIN" } else { "Enter the recovery password or PIN" }
+        use crate::app::RecoveryPrompt;
+        match (s.recovery_prompt, l == Lang::Hans) {
+            (RecoveryPrompt::Code, true) => "输入恢复码",
+            (RecoveryPrompt::Code, false) => "Enter the recovery code",
+            (RecoveryPrompt::NewCredential, true) => "输入新的密码或 PIN",
+            (RecoveryPrompt::NewCredential, false) => "Enter a new password or PIN",
+            (RecoveryPrompt::ConfirmCredential, true) => "再次输入新凭据",
+            (RecoveryPrompt::ConfirmCredential, false) => "Repeat the new credential",
+            (_, true) => "输入 Recovery 密码或 PIN",
+            (_, false) => "Enter the recovery password or PIN",
+        }
     } else {
         l.pick(if checking { texts::decrypt::CHECKING } else { texts::decrypt::TO_SEE_FILES })
     };
@@ -1125,7 +1135,12 @@ fn code(cx: &Ctx, mut c: Canvas, user: u32, keys: Keys, checking: bool) -> Frame
     if keys != Keys::Pattern {
         widgets::code_dots(&mut c, t, x, bottom - m.dp(92.0), s.code.chars().count());
     }
-    if !s.recovery_credential {
+    if s.recovery_credential && s.recovery_prompt == crate::app::RecoveryPrompt::OfferCode && !checking {
+        let y = bottom - m.dp(34.0);
+        let label = if l == Lang::Hans { "使用恢复码" } else { "Use recovery code" };
+        c.text_center(&f.heading, label, x, y, m.row_title_px, t.pal.accent);
+        out.push(Hit { rect: Rect::new(x - m.dp(100.0), y - m.dp(24.0), m.dp(200.0), m.dp(48.0)), action: Action::UseRecoveryCode });
+    } else if !s.recovery_credential {
         let skip_cy = bottom - m.dp(34.0);
         c.text_center(&f.heading, l.pick(texts::decrypt::NOT_NOW), x, skip_cy, m.row_title_px, t.pal.accent);
         out.push(Hit { rect: Rect::new(x - m.dp(80.0), skip_cy - m.dp(24.0), m.dp(160.0), m.dp(48.0)), action: Action::Skip });

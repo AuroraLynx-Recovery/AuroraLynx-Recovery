@@ -65,6 +65,17 @@ impl Lock {
         self.check_with(code, |lock| lock.recovery.as_ref(), |lock| lock.write())
     }
 
+    #[cfg(target_os = "android")]
+    pub fn reset_with_recovery_code(&mut self, code: &[u8], replacement: &[u8]) -> Result<Attempt> {
+        let attempt = self.attempt_recovery_code(code)?;
+        if matches!(attempt, Attempt::Unlocked) {
+            let next = Self::new(self.kind(), replacement)?;
+            next.write()?;
+            *self = next;
+        }
+        Ok(attempt)
+    }
+
     /// Generate a new rescue code only after verifying the current credential.
     #[cfg(target_os = "android")]
     pub fn issue_recovery_code(&mut self, credential: &[u8]) -> Result<(Attempt, Option<String>)> {

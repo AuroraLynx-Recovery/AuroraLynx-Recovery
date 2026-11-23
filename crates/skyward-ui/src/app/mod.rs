@@ -280,6 +280,7 @@ pub enum Action {
     RecoveryLockEdit(Option<Keys>),
     RecoveryCodeEnroll,
     RecoveryCodeDone,
+    UseRecoveryCode,
     Open(Screen),
     /// Leave the decrypt page for the page it was opened from; the page
     /// the recovery started on, for the home page without keeping it
@@ -546,6 +547,7 @@ pub enum Effect {
     Unlock { user: u32, code: String },
     ReadRecoveryLock,
     IssueRecoveryCode(String),
+    UseRecoveryCode,
     ReadRootModules,
     InstallModuleZip { manager: ModuleManager, path: String },
     ChangeRootModule { id: String, change: ModuleChange },

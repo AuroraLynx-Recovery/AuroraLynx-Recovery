@@ -25,6 +25,11 @@ impl App {
                 }
                 return self.arrive_at(s);
             }
+            Action::UseRecoveryCode => {
+                if self.state.recovery_credential && self.state.recovery_prompt == RecoveryPrompt::OfferCode {
+                    return vec![Effect::UseRecoveryCode];
+                }
+            }
             Action::RecoveryCodeEnroll => {
                 if let RecoveryLock::Menu(Some(keys)) = self.state.recovery_lock {
                     self.state.recovery_lock = RecoveryLock::Enroll(keys);
