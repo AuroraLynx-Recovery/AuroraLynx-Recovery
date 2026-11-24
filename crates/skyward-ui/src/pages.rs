@@ -2544,6 +2544,10 @@ fn root_modules(cx: &Ctx, detail: bool) -> Frame {
         Some(Ok(modules)) if detail => {
             if let Some(module) = modules.iter().find(|module| Some(&module.id) == s.root_module.as_ref()) {
                 y = widgets::paragraph(&mut c, t, f, y, &module.id);
+                if let Some(error) = &module.metadata_error {
+                    let label = if zh { "无法读取模块详情" } else { "Module details unavailable" };
+                    y = widgets::paragraph(&mut c, t, f, y, &format!("{label} ({error})"));
+                }
                 for (key, value) in &module.properties {
                     y = widgets::paragraph(&mut c, t, f, y, &format!("{key}  {value}"));
                 }

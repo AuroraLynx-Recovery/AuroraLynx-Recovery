@@ -94,6 +94,7 @@ pub enum ModuleChange {
 pub struct RootModule {
     pub id: String,
     pub properties: Vec<(String, String)>,
+    pub metadata_error: Option<String>,
     pub disabled: bool,
     pub removing: bool,
     pub pending_update: bool,

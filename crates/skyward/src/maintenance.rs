@@ -246,8 +246,13 @@ fn module_catalog_at(root: &Path) -> Result<Vec<skyward_ui::app::RootModule>> {
             if !installed && modules.iter().any(|entry: &RootModule| entry.id == id) {
                 continue;
             }
+            let (properties, metadata_error) = match module_properties(&module) {
+                Ok(properties) => (properties, None),
+                Err(error) => (Vec::new(), Some(format!("{error:#}"))),
+            };
             modules.push(RootModule {
-                properties: module_properties(&module)?,
+                properties,
+                metadata_error,
                 installed,
                 disabled: installed && module.join("disable").symlink_metadata().is_ok(),
                 removing: installed && module.join("remove").symlink_metadata().is_ok(),
@@ -274,6 +279,9 @@ fn module_info(root: &Path, id: &str) -> Result<()> {
     println!("id={id}");
     println!("state={}", module_state(&module));
     println!("pending_update={}", module.pending_update);
+    if let Some(error) = module.metadata_error {
+        println!("metadata_error={error}");
+    }
     for (key, value) in module.properties {
         println!("{key}={value}");
     }

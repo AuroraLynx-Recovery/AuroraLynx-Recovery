@@ -84,3 +84,4 @@ OrangeFox 官方功能清单确认支持三个管理器的模块管理。其构�
 - 计划移除或取消移除时，若检测到 APatch，则一并写入其 Android 启动时使用的 `/data/adb/ap/update` 通知。与 APatch 原生命令一致保留模块自己的 remove 标记语义。Cerro arm64 overlay 构建通过。 [APatch 命令实现](https://github.com/bmax121/APatch/blob/main/apd/src/module.rs)
 - 批量提取在写入前检查 FAT 单文件上限，避免已导出部分镜像后才发现某个 IMG 无法写入。主机以只读方式验证 FAT 和 ext 文件系统识别，Cerro arm64 构建通过。
 - 模块列表与详情 CLI 和图形页现在共用清单，CLI 也能查询待安装模块。主机隔离目录验证同名合并、仅暂存项、已禁用状态、无元数据目录与符号链接过滤。Cerro arm64 构建通过。
+- 单个模块的元数据读失败时，图形界面与 CLI 仍列出模块及其启停状态，在详情中报告错误。主机用一个无效 UTF-8 模块和一个正常模块验证隔离行为。Cerro arm64 构建通过。
