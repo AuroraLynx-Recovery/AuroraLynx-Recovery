@@ -25,6 +25,8 @@ mod keys;
 mod merge;
 #[cfg(target_os = "android")]
 mod partwork;
+#[cfg(any(target_os = "android", test))]
+mod kernelsu_preinit;
 #[cfg(target_os = "android")]
 mod maintenance;
 #[cfg(target_os = "android")]

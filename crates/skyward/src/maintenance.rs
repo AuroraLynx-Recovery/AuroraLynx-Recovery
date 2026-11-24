@@ -194,7 +194,10 @@ pub fn modules(action: ModuleAction) -> Result<()> {
             set_module_marker(&ap.join("update"), true)?;
         }
     }
-    set_module_marker(&marker, set)
+    set_module_marker(&marker, set)?;
+    // ksud would rebuild preinit from the recovery kernel and delete the
+    // Android copy when that kernel reports preinit as unsupported.
+    crate::kernelsu_preinit::sync_existing()
 }
 
 fn set_module_marker(flag: &Path, set: bool) -> Result<()> {

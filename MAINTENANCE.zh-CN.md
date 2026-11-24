@@ -19,7 +19,7 @@ OrangeFox 官方功能清单确认支持三个管理器的模块管理。其构�
 
 ### KernelSU 与 APatch 离线后端的兼容条件
 
-上游 KernelSU 安装入口先验证内核 UAPI，再检查 Android 启动状态。通过后才处理元模块、暂存目录和热安装请求，最后可能重新生成 preinit 配置。上游启用、禁用、计划移除和取消也会尝试重新生成 preinit。当前 Recovery 的文件标记操作只覆盖常规模块状态，带 preinit 的模块仍缺这一步。
+上游 KernelSU 安装入口先验证内核 UAPI，再检查 Android 启动状态。通过后才处理元模块、暂存目录和热安装请求，最后可能重新生成 preinit 配置。上游启用、禁用、计划移除和取消也会尝试重新生成 preinit。AuroraLynx 写入 `disable` 或 `remove` 标记后，只更新 `/metadata` 上已经存在的 KernelSU 目录：`/metadata/vold/ksu`、`/metadata/watchdog/ksu` 和 `/metadata/ksu`。已有的 `modules.rc` 按下次启动仍启用的模块重写，`preinit/` 里不再保留已禁用、待移除或被另一份副本抑制的模块。不调用 `ksud` 做这次重建。Recovery 内核若报告不支持 preinit，上游命令会删除 Android 下次启动要用的副本。没有现成目录时不新建，避免按 Recovery 内核选错位置。`/metadata` 未挂载时标记仍然写入，preinit 保持原样。模块目录、init 脚本和 preinit 文件中的符号链接不会被跟随。
 
 APatch 普通模块安装会检查当前元模块，并调用其安装器或内置脚本。启动时需要消费暂存目录和 APatch 更新标记，替换已安装目录时继承禁用或移除状态。两种管理器都需要分别验证暂存发布、失败清理以及新装和更新的接管。直接解压 ZIP 会跳过安装脚本及上述状态处理。
 
@@ -97,3 +97,4 @@ APatch 普通模块安装会检查当前元模块，并调用其安装器或内�
 - Magisk 模块安装优先调用已安装版本的 util_functions.sh 中的 install_module，明确使用 Recovery 模式，并在独立、私有传播的挂载命名空间运行。主机替身测试验证带空格的 ZIP 路径、Recovery 模式和输出参数，Cerro arm64 构建通过。 [Magisk 官方模块安装脚本](https://github.com/topjohnwu/Magisk/blob/master/scripts/module_installer.sh)
 - 模块 ZIP 在调用安装器前要求单一、无歧义的模块 ID。主机测试覆盖 CRLF、重复 ID、首字符、非法路径字符和空格。Cerro arm64 overlay 构建通过。
 - APatch 取消移除时同时清理待更新版本的 remove 标记，避免启动时激活待更新目录后仍执行移除。主机验证已安装和待更新目录、重复取消及重新计划移除，Cerro arm64 overlay 构建通过。
+- 模块标记变更后更新已有 KernelSU preinit 目录，不调用 `ksud`，也不因 Recovery 内核不支持 preinit 而删除这些目录。主机测试覆盖禁用后撤下副本、取消禁用后写回、暂存副本被已安装移除标记抑制、无现成目录时不新建，以及符号链接不被跟随。
