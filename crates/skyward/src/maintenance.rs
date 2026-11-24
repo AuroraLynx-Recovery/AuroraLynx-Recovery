@@ -343,9 +343,8 @@ fn install_module(manager: RootManager, archive: &Path) -> Result<()> {
     let (_, id) = ids.next().context("module.prop has no ID")?;
     ensure!(valid_name(id.trim()) && ids.next().is_none(), "invalid or duplicate module ID");
 
-    let program = manager.program();
-    ensure!(Path::new(program).is_file(), "{manager:?} installer is unavailable ({program})");
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
+    let mut command = module_installer(manager, &archive)?;
     let (mut reader, writer) = io::pipe()?;
     use std::os::fd::AsRawFd;
     // Only the reader is nonblocking. The installer still gets ordinary
@@ -354,10 +353,7 @@ fn install_module(manager: RootManager, archive: &Path) -> Result<()> {
         return Err(io::Error::last_os_error()).context("configure installer diagnostics");
     }
     let stderr = writer.try_clone()?;
-    let mut child = Command::new(program)
-        .args(manager.arguments())
-        .arg(&archive)
-        .stdin(Stdio::null())
+    let mut child = command.stdin(Stdio::null())
         .stdout(writer)
         .stderr(stderr)
         .spawn()
@@ -373,6 +369,55 @@ fn install_module(manager: RootManager, archive: &Path) -> Result<()> {
     Ok(())
 }
 
+
+fn module_installer(manager: RootManager, archive: &Path) -> Result<std::process::Command> {
+    use std::os::unix::process::CommandExt;
+    use std::process::Command;
+
+    let magisk_util = Path::new("/data/adb/magisk/util_functions.sh");
+    if matches!(manager, RootManager::Magisk) && magisk_util.is_file() {
+        // Adapt Magisk's module_installer.sh to the already open /data and
+        // the recovery's stdout. The package path is a positional argument.
+        let mut command = Command::new("/system/bin/sh");
+        command.args(["-c", r#"
+            umask 022
+            BOOTMODE=false
+            OUTFD=1
+            ZIPFILE="$1"
+            . /data/adb/magisk/util_functions.sh || exit 1
+            [ "${MAGISK_VER_CODE:-0}" -ge 20400 ] || {
+                echo "Magisk 20.4 or later is required" >&2
+                exit 1
+            }
+            install_module
+        "#, "auroralynx-magisk-module"]).arg(archive);
+        // Magisk's recovery functions mount and unmount partitions. Their
+        // mount changes must stay in the installer's own namespace.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::unshare(libc::CLONE_NEWNS) != 0
+                    || libc::mount(
+                        std::ptr::null(),
+                        c"/".as_ptr(),
+                        std::ptr::null(),
+                        libc::MS_REC | libc::MS_PRIVATE,
+                        std::ptr::null(),
+                    ) != 0
+                {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        return Ok(command);
+    }
+
+    let program = manager.program();
+    ensure!(Path::new(program).is_file(), "{manager:?} installer is unavailable ({program})");
+    let mut command = Command::new(program);
+    command.args(manager.arguments()).arg(archive);
+    Ok(command)
+}
 
 /// Retain bounded diagnostics while draining both streams so verbose module
 /// scripts do not block or allocate memory proportional to their output.

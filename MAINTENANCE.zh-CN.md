@@ -85,3 +85,4 @@ OrangeFox 官方功能清单确认支持三个管理器的模块管理。其构�
 - 批量提取在写入前检查 FAT 单文件上限，避免已导出部分镜像后才发现某个 IMG 无法写入。主机以只读方式验证 FAT 和 ext 文件系统识别，Cerro arm64 构建通过。
 - 模块列表与详情 CLI 和图形页现在共用清单，CLI 也能查询待安装模块。主机隔离目录验证同名合并、仅暂存项、已禁用状态、无元数据目录与符号链接过滤。Cerro arm64 构建通过。
 - 单个模块的元数据读失败时，图形界面与 CLI 仍列出模块及其启停状态，在详情中报告错误。主机用一个无效 UTF-8 模块和一个正常模块验证隔离行为。Cerro arm64 构建通过。
+- Magisk 模块安装优先调用已安装版本的 util_functions.sh 中的 install_module，明确使用 Recovery 模式，并在独立、私有传播的挂载命名空间运行。主机替身测试验证带空格的 ZIP 路径、Recovery 模式和输出参数，Cerro arm64 构建通过。 [Magisk 官方模块安装脚本](https://github.com/topjohnwu/Magisk/blob/master/scripts/module_installer.sh)
