@@ -98,3 +98,5 @@ APatch 普通模块安装会检查当前元模块，并调用其安装器或内�
 - 模块 ZIP 在调用安装器前要求单一、无歧义的模块 ID。主机测试覆盖 CRLF、重复 ID、首字符、非法路径字符和空格。Cerro arm64 overlay 构建通过。
 - APatch 取消移除时同时清理待更新版本的 remove 标记，避免启动时激活待更新目录后仍执行移除。主机验证已安装和待更新目录、重复取消及重新计划移除，Cerro arm64 overlay 构建通过。
 - 模块标记变更后更新已有 KernelSU preinit 目录，不调用 `ksud`，也不因 Recovery 内核不支持 preinit 而删除这些目录。主机测试覆盖禁用后撤下副本、取消禁用后写回、暂存副本被已安装移除标记抑制、无现成目录时不新建，以及符号链接不被跟随。
+- 已将公开仓库的 KernelSU preinit 修复（0c10341）纳入 AuroraAOSP 的 0129 重放补丁。从固定上游基线重放后，核对源码与公开提交一致，六项主机测试通过。
+- 含 0129 的 Cerro arm64 overlay 构建退出码为 0，产物中的 skyward 入口指向 AArch64 recovery 可执行文件。
