@@ -172,7 +172,19 @@ pub fn modules(action: ModuleAction) -> Result<()> {
         ModuleAction::CancelRemoval { id } => (id, "remove", false),
     };
     let module = module_path(root, &id)?;
-    let flag = module.join(flag);
+    let marker = module.join(flag);
+    if flag == "remove" {
+        let ap = root.with_file_name("ap");
+        if root.with_file_name("apd").is_file() && ap.symlink_metadata().is_ok_and(|metadata| metadata.is_dir()) {
+            // APatch's native uninstall and undo operations also notify its
+            // boot-time module updater through /data/adb/ap/update.
+            set_module_marker(&ap.join("update"), true)?;
+        }
+    }
+    set_module_marker(&marker, set)
+}
+
+fn set_module_marker(flag: &Path, set: bool) -> Result<()> {
     match flag.symlink_metadata() {
         Ok(meta) => {
             ensure!(meta.is_file(), "invalid module marker {}", flag.display());
@@ -188,7 +200,7 @@ pub fn modules(action: ModuleAction) -> Result<()> {
         }
         Err(error) => return Err(error.into()),
     }
-    File::open(module)?.sync_all()?;
+    File::open(flag.parent().context("module marker has no parent")?)?.sync_all()?;
     Ok(())
 }
 
