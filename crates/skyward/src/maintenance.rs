@@ -62,6 +62,7 @@ pub fn extract(output: &Path, names: &[String]) -> Result<()> {
     let mut seen = BTreeSet::new();
     let mut sources = Vec::new();
     let mut needed = 0u64;
+    let limit = image_file_limit(&output)?;
     for name in names {
         ensure!(valid_name(name) && seen.insert(name), "invalid or duplicate partition {name:?}");
         let filename = output.join(format!("{name}.img"));
@@ -72,6 +73,7 @@ pub fn extract(output: &Path, names: &[String]) -> Result<()> {
         }
         let source = catalog.iter().find(|source| &source.name == name)
             .with_context(|| format!("unknown or unreadable partition {name}"))?;
+        ensure!(source.size <= limit, "{name}.img needs {} bytes, above the destination's {limit}-byte file limit", source.size);
         needed = needed.checked_add(source.size).context("partition size total overflow")?;
         sources.push((name, filename, source));
     }
@@ -94,6 +96,17 @@ pub fn extract(output: &Path, names: &[String]) -> Result<()> {
         println!("{}", filename.display());
     }
     Ok(())
+}
+
+fn image_file_limit(output: &Path) -> Result<u64> {
+    const MSDOS_SUPER_MAGIC: u64 = 0x4d44;
+    let path = CString::new(output.as_os_str().as_bytes())?;
+    let mut stats = std::mem::MaybeUninit::<libc::statfs>::uninit();
+    if unsafe { libc::statfs(path.as_ptr(), stats.as_mut_ptr()) } != 0 {
+        return Err(io::Error::last_os_error()).with_context(|| format!("inspect filesystem at {}", output.display()));
+    }
+    let filesystem = unsafe { stats.assume_init() }.f_type;
+    Ok(if filesystem as u64 == MSDOS_SUPER_MAGIC { u64::from(u32::MAX) } else { u64::MAX })
 }
 
 fn copy_image(input: &Path, output: &Path) -> Result<()> {

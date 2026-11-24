@@ -82,3 +82,4 @@ OrangeFox 官方功能清单确认支持三个管理器的模块管理。其构�
 - 单 IMG 刷入支持设备明确列于备份配置的无槽位实体分区，由完整分区名加 `.img` 后缀匹配目标，不移除槽位后缀，并沿用卸载、容量检查、写入及读回校验。super 仍走专门的元数据检查，userdata、metadata 和 misc 不进入该新增选择。Cerro arm64 构建及 17 项镜像测试通过。
 - 无槽位分区镜像的文件名精确匹配通过 17 项镜像测试及 Cerro arm64 构建。测试覆盖大写 IMG 后缀、拒绝带槽位后缀以及拒绝非 IMG。
 - 计划移除或取消移除时，若检测到 APatch，则一并写入其 Android 启动时使用的 `/data/adb/ap/update` 通知。与 APatch 原生命令一致保留模块自己的 remove 标记语义。Cerro arm64 overlay 构建通过。 [APatch 命令实现](https://github.com/bmax121/APatch/blob/main/apd/src/module.rs)
+- 批量提取在写入前检查 FAT 单文件上限，避免已导出部分镜像后才发现某个 IMG 无法写入。主机以只读方式验证 FAT 和 ext 文件系统识别，Cerro arm64 构建通过。
