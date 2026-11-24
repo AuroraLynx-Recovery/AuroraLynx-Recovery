@@ -360,20 +360,25 @@ fn install_module(manager: RootManager, archive: &Path) -> Result<()> {
 
     use std::process::Stdio;
     let adb = Path::new("/data/adb");
+    let backend = match manager {
+        RootManager::APatch => Some(("ap/bin/busybox", include_str!("apatch_recovery_installer.sh"), "APATCH", "true")),
+        RootManager::KernelSu => Some(("ksu/bin/busybox", include_str!("kernelsu_recovery_installer.sh"), "KSU", "true")),
+        RootManager::Magisk => None,
+    };
     let mut staging = None;
-    let mut command = if matches!(manager, RootManager::APatch)
-        && adb.join("ap/bin/busybox").is_file()
-        && adb.join("metamodule").symlink_metadata().is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
-        && !properties.contains("metamodule")
-    {
-        ensure!(Path::new(manager.program()).is_file(), "APatch is unavailable");
-        let temp = tempfile::Builder::new().prefix(".auroralynx-apatch-").tempdir_in(adb)?;
-        let mut command = std::process::Command::new(adb.join("ap/bin/busybox"));
-        command.args(["sh", "-c", include_str!("apatch_recovery_installer.sh"), "auroralynx-apatch-module"])
+    let mut command = if let Some((busybox, script, manager_var, manager_value)) = backend.filter(|(busybox, _, _, _)| {
+        adb.join(busybox).is_file()
+            && adb.join("metamodule").symlink_metadata().is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+            && !properties.contains("metamodule")
+    }) {
+        ensure!(Path::new(manager.program()).is_file(), "{manager:?} is unavailable");
+        let temp = tempfile::Builder::new().prefix(".auroralynx-module-").tempdir_in(adb)?;
+        let mut command = std::process::Command::new(adb.join(busybox));
+        command.args(["sh", "-c", script, "auroralynx-module"])
             .arg(temp.path())
             .arg(temp.path().join("scratch"))
             .env("ASH_STANDALONE", "1")
-            .env("APATCH", "true")
+            .env(manager_var, manager_value)
             .env("BOOTMODE", "false")
             .env("OUTFD", "1")
             .env("ZIPFILE", &archive);
@@ -418,9 +423,15 @@ fn install_module(manager: RootManager, archive: &Path) -> Result<()> {
                 Err(error) => return Err(error.into()),
             }
         }
-        set_module_marker(&adb.join("ap/update"), true)?;
+        if matches!(manager, RootManager::APatch) {
+            set_module_marker(&adb.join("ap/update"), true)?;
+        }
         publish_image(&module, &pending.join(id))?;
         File::open(&pending)?.sync_all()?;
+        if matches!(manager, RootManager::KernelSu) {
+            crate::kernelsu_preinit::sync_existing()
+                .context("module staged, but refreshing KernelSU preinit failed")?;
+        }
     }
     Ok(())
 }

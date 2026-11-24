@@ -6,12 +6,12 @@
 
 终端命令 `skyward root-modules list` 在 /data 挂载后枚举 `/data/adb/modules` 下含有 `module.prop` 的目录，显示模块 ID 与启用、停用或待移除状态。`root-modules info <ID>` 读取名称、版本、版本号、作者与描述，限制读取大小并去除终端控制字符。命令 `enable`、`disable`、`remove`、`cancel-removal` 接收一个模块 ID，维护 Root 管理器读取的 `disable` 和 `remove` 标记。删除操作交由对应管理器在 Android 启动时执行。CLI 检查模块名和目录类型，拒绝把符号链接当作标记文件。
 
-OrangeFox 的 Magisk、KernelSU 和 APatch 模块管理是对齐目标。「高级 → Root 模块」读取已安装模块，显示名称、元数据和启停或待移除状态。详情页识别 `/data/adb/modules_update` 下同名模块的暂存更新，并可启用、禁用、计划移除或取消移除。界面和命令行共用标记写入。还需逐一验证各管理器启动后的处理。CLI 通过 `skyward root-modules install <管理器> <ZIP>` 显式选择已安装的后端，检查 ZIP 根目录的 `module.prop` 后调用原生安装命令，并报告退出状态。图形入口位于「高级 → Root 模块 → 安装模块 ZIP」。先选择管理器，再从内部存储或 USB 选择 ZIP，也可以输入绝对路径。明确确认后才安装。安装在后台调用同一原生后端，结束时显示结果并重新读取模块清单。返回失败时显示后端最后 4 KiB 的诊断。当前 KernelSU 和 APatch 上游安装入口要求 Android 完成启动。若已安装的版本有该限制，Recovery 会显示原生拒绝原因。支持这种版本的离线安装仍缺可用后端。需求范围集中在模块，启动镜像修补未纳入本次实现。
+OrangeFox 的 Magisk、KernelSU 和 APatch 模块管理是对齐目标。「高级 → Root 模块」读取已安装模块，显示名称、元数据和启停或待移除状态。详情页识别 `/data/adb/modules_update` 下同名模块的暂存更新，并可启用、禁用、计划移除或取消移除。界面和命令行共用标记写入。还需逐一验证各管理器启动后的处理。CLI 通过 `skyward root-modules install <管理器> <ZIP>` 显式选择已安装的后端，检查 ZIP 根目录的 `module.prop` 后调用原生安装命令，并报告退出状态。图形入口位于「高级 → Root 模块 → 安装模块 ZIP」。先选择管理器，再从内部存储或 USB 选择 ZIP，也可以输入绝对路径。明确确认后才安装。安装在后台调用同一原生后端，结束时显示结果并重新读取模块清单。返回失败时显示后端最后 4 KiB 的诊断。当前 KernelSU 和 APatch 上游安装入口要求 Android 完成启动。若已安装的版本有该限制，Recovery 会显示原生拒绝原因。普通模块可选用 Recovery 内置的固定版本脚本暂存安装。现有元模块或缺少对应 BusyBox 时仍调用原生入口。需求范围集中在模块，启动镜像修补未纳入本次实现。
 
 
 - 原生入口参照 [Magisk 工具文档](https://github.com/topjohnwu/Magisk/blob/master/docs/tools.md)、[KernelSU 命令实现](https://github.com/tiann/KernelSU/blob/main/userspace/ksud/src/cli.rs) 和 [APatch 命令实现](https://github.com/bmax121/APatch/blob/main/apd/src/cli.rs)。
 
-OrangeFox 官方功能清单确认支持三个管理器的模块管理。其构建选项所列的 KernelSU Addon 用于安装 KernelSU 本身，属于本次明确排除的 Root 修补。公开文档未给出该 Addon 可安装普通 KernelSU 模块 ZIP 的依据。KernelSU 的模块开发文档明确将自定义 Recovery 排除在其模块 ZIP 的受支持安装环境之外。AuroraLynx 当前提供原生安装器分派，离线可用性取决于实际版本和设备环境。受 Android 启动检查限制的版本仍待解决。
+OrangeFox 官方功能清单确认支持三个管理器的模块管理。其构建选项所列的 KernelSU Addon 用于安装 KernelSU 本身，属于本次明确排除的 Root 修补。公开文档未给出该 Addon 可安装普通 KernelSU 模块 ZIP 的依据。KernelSU 的模块开发文档明确将自定义 Recovery 排除在其模块 ZIP 的受支持安装环境之外。AuroraLynx 当前提供原生安装器分派，离线可用性取决于实际版本和设备环境。元模块及依赖 Android 运行服务的模块仍受其运行环境限制。
 
 - [OrangeFox 功能清单](https://wiki.orangefox.tech/root)
 - [OrangeFox 构建变量](https://wiki.orangefox.tech/dev/build_vars)
@@ -102,3 +102,4 @@ APatch 普通模块安装会检查当前元模块，并调用其安装器或内�
 - 含 0129 的 Cerro arm64 overlay 构建退出码为 0，产物中的 skyward 入口指向 AArch64 recovery 可执行文件。
 - ZIP 预检对 KernelSU 和 APatch 拒绝单字符 ID，与其当前原生安装器规则一致。Magisk 保留原有预检规则。Cerro arm64 overlay 构建通过。
 - APatch 普通模块已接入 Recovery 离线安装。脚本使用 APatch 的 BusyBox 和私有挂载命名空间，成功后发布到 modules_update，拒绝覆盖已有待更新目录。元模块路径仍使用原生入口。Cerro arm64 overlay 构建通过，Android 启动接管尚未整体验证。
+- KernelSU 普通模块已接入离线安装，成功发布后同步已有 preinit 目录。主机测试用测试 ZIP 验证两个上游脚本执行 customize.sh 并写入指定目录，测试替代挂载和 Android 权限操作。Cerro arm64 overlay 构建通过，实际启动接管尚待验证。
