@@ -339,9 +339,7 @@ fn install_module(manager: RootManager, archive: &Path) -> Result<()> {
     let mut properties = String::new();
     prop.take(65537).read_to_string(&mut properties)?;
     ensure!(properties.len() <= 65536, "module metadata exceeds 64 KiB");
-    let mut ids = properties.lines().filter_map(|line| line.split_once('=')).filter(|(key, _)| key.trim() == "id");
-    let (_, id) = ids.next().context("module.prop has no ID")?;
-    ensure!(valid_name(id.trim()) && ids.next().is_none(), "invalid or duplicate module ID");
+    module_zip_id(&properties)?;
 
     use std::process::Stdio;
     let mut command = module_installer(manager, &archive)?;
@@ -369,6 +367,17 @@ fn install_module(manager: RootManager, archive: &Path) -> Result<()> {
     Ok(())
 }
 
+
+fn module_zip_id(properties: &str) -> Result<&str> {
+    let mut ids = properties.lines().filter_map(|line| line.split_once('=')).filter(|(key, _)| key.trim() == "id");
+    let (key, id) = ids.next().context("module.prop has no ID")?;
+    ensure!(
+        key == "id" && id.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+            && valid_name(id) && ids.next().is_none(),
+        "invalid or duplicate module ID"
+    );
+    Ok(id)
+}
 
 fn module_installer(manager: RootManager, archive: &Path) -> Result<std::process::Command> {
     use std::os::unix::process::CommandExt;
