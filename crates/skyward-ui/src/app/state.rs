@@ -216,6 +216,19 @@ pub struct State {
     pub skyward_job: Option<SkywardJob>,
     /// How fast data went over the network joined in the last second.
     pub traffic: Traffic,
+    /// The VNC address and password typed on that page. They are not saved.
+    pub vnc_host: String,
+    pub vnc_password: String,
+    /// 0 the address, 1 the password, 2 the remote desktop's keyboard.
+    pub vnc_field: u8,
+    pub agent_url: String,
+    pub agent_model: String,
+    pub agent_key: String,
+    pub agent_draft: String,
+    /// 0 address, 1 model, 2 key, 3 the message.
+    pub agent_field: u8,
+    pub agent_chat: Vec<crate::agent::Line>,
+    pub agent_busy: bool,
 }
 
 impl Default for State {
@@ -327,6 +340,16 @@ impl Default for State {
             skyward_check: SkywardCheck::Idle,
             skyward_job: None,
             traffic: Traffic::default(),
+            vnc_host: String::new(),
+            vnc_password: String::new(),
+            vnc_field: 0,
+            agent_url: String::new(),
+            agent_model: String::new(),
+            agent_key: String::new(),
+            agent_draft: String::new(),
+            agent_field: 3,
+            agent_chat: Vec::new(),
+            agent_busy: false,
         }
     }
 }

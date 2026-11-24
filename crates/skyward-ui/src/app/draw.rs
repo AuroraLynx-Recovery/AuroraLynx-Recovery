@@ -39,7 +39,7 @@ impl App {
             let screen = self.screen();
             for rows in std::mem::take(&mut self.stale) {
                 let band = Band { rows, cols: (0, self.cols) };
-                let cx = Ctx { t: &t, f, info, state: &self.state, term: self.term.as_ref(), band: Some(band) };
+                let cx = Ctx { t: &t, f, info, state: &self.state, term: self.term.as_ref(), vnc: self.vnc.as_ref(), band: Some(band) };
                 let fresh = self.render_page(screen, &cx);
                 let mut canvas = self.frame.take().expect("checked above").canvas;
                 assert_eq!(canvas.h, fresh.canvas.h, "a page drawn again in part is as tall as it was");
@@ -52,7 +52,7 @@ impl App {
             let screen = self.screen();
             let first = self.top().1.max(0.0) as u32;
             let band = Band { rows: (first, first + self.h), cols: (0, wide.min(self.w)) };
-            let cx = Ctx { t: &t, f, info, state: &self.state, term: self.term.as_ref(), band: Some(band) };
+            let cx = Ctx { t: &t, f, info, state: &self.state, term: self.term.as_ref(), vnc: self.vnc.as_ref(), band: Some(band) };
             let mut frame = self.render_page(screen, &cx);
             // A page drawn in part across holds its rows whole, the columns
             // of them drawn on as they are needed.
@@ -125,7 +125,7 @@ impl App {
         let held = frame.canvas.held();
         let t = self.theme();
         let band = Band { rows: (held.start, held.end), cols: (self.cols, wide) };
-        let cx = Ctx { t: &t, f, info, state: &self.state, term: self.term.as_ref(), band: Some(band) };
+        let cx = Ctx { t: &t, f, info, state: &self.state, term: self.term.as_ref(), vnc: self.vnc.as_ref(), band: Some(band) };
         let part = pages::render(self.screen(), &cx).canvas;
         self.frame.as_mut().expect("drawn above").canvas.replace(&part);
         self.cols = wide;
@@ -156,7 +156,7 @@ impl App {
         let screen = self.screen();
         for rows in bands {
             let band = Band { rows, cols: (0, self.w) };
-            let cx = Ctx { t: &t, f, info, state: &self.state, term: self.term.as_ref(), band: Some(band) };
+            let cx = Ctx { t: &t, f, info, state: &self.state, term: self.term.as_ref(), vnc: self.vnc.as_ref(), band: Some(band) };
             let part = pages::render(screen, &cx).canvas;
             self.frame.as_mut().expect("drawn above").canvas.join(&part);
         }
@@ -212,6 +212,7 @@ impl App {
     /// left, the status bar, any message, and the back cue while a swipe
     /// from an edge is under way.
     fn compose_page(&mut self, out: &mut Canvas, f: &Fonts, info: &DeviceInfo, clock: &str, now: u64) {
+        self.sample_expressive(now);
         // A page opened is drawn from its left edge as it slides in.
         let opening = self.turn.as_ref().is_some_and(|t| !t.back);
         self.render(f, info, if opening { 0 } else { self.w });
@@ -283,7 +284,7 @@ impl App {
             let (x, y, w, h) = row_part(press.rect, page);
             let pressed = t.pressed();
             let band = Band { rows: (y, y + h), cols: (x, x + w) };
-            let cx = Ctx { t: &pressed, f, info, state: &self.state, term: self.term.as_ref(), band: Some(band) };
+            let cx = Ctx { t: &pressed, f, info, state: &self.state, term: self.term.as_ref(), vnc: self.vnc.as_ref(), band: Some(band) };
             let down = pages::render(screen, &cx).canvas;
             assert_eq!((down.w, down.h), (page.w, page.h), "a page held down is laid out as it was");
             self.row_art = Some((page.crop(x, y, w, h), down.crop(x, y, w, h)));
@@ -297,6 +298,7 @@ impl App {
             caret: caret_on,
             row: self.row_press.map_or(0.0, |p| p.level(now)),
             pressing: self.pressing(),
+            squeeze: if self.expressive_active() { self.row_press.map_or(0.0, |p| p.squeeze(now)) } else { 0.0 },
         };
         let tab_progress = self.tab_motion.as_ref().map(|motion| motion.progress(now));
         if tab_progress.is_some_and(|progress| progress >= 1.0) {
@@ -397,9 +399,16 @@ impl App {
         // The row a finger holds darkens as part of the page, under what is
         // laid over the page.
         let press_row = |out: &mut Canvas| {
-            if let (Some(press), Some((was, is))) = (self.row_press, &self.row_art) {
-                let (x, y, _, _) = row_part(press.rect, &frame.canvas);
-                out.relay(was, is, x as i32, y as i32 - offset as i32, view.row);
+            if let Some(press) = self.row_press {
+                let (x, y, w, h) = row_part(press.rect, &frame.canvas);
+                let dy = y as i32 - offset as i32;
+                if let Some((was, is)) = &self.row_art {
+                    out.relay(was, is, x as i32, dy, view.row);
+                }
+                if view.squeeze.abs() > 0.02 {
+                    let scale = (1.0 - 0.03 * view.squeeze).clamp(0.94, 1.04);
+                    out.pinch(x as i32, dy, w, h, scale);
+                }
             }
         };
 
@@ -469,13 +478,17 @@ impl App {
                             let (f, info) = fresh.expect("a page drawn again as it last showed has its rows in view drawn");
                             let mut c = self.spare.pop().unwrap_or_else(|| Canvas::new(out.w, 0));
                             c.resize((rows.edges[i + 1] - rows.edges[i]) as u32);
-                            let cx = Ctx { t, f, info, state: &self.state, term: self.term.as_ref(), band: None };
+                            let cx = Ctx { t, f, info, state: &self.state, term: self.term.as_ref(), vnc: self.vnc.as_ref(), band: None };
                             pages::row(screen, &cx, i, &mut c);
                             self.drawn.push((i, c));
                             self.drawn.len() - 1
                         }
                     };
-                    out.put(&self.drawn[k].1, (rows.edges[i] - offset) as i32);
+                    if t.wallpaper {
+                        out.lay(&self.drawn[k].1, 0, (rows.edges[i] - offset) as i32, 1.0);
+                    } else {
+                        out.put(&self.drawn[k].1, (rows.edges[i] - offset) as i32);
+                    }
                 }
             } else {
                 // Off a long list, its rows' canvases are not kept.
@@ -493,12 +506,31 @@ impl App {
         }
         // The search page's round button and the home page's search bar
         // darken at once under a finger.
+        let pinch_icon = |out: &mut Canvas, rect: Rect| {
+            if t.motion.icon.abs() > 0.02 {
+                let scale = (1.0 - 0.03 * t.motion.icon).clamp(0.94, 1.04);
+                let (x, y, w, h) = (rect.x.floor() as i32, rect.y.floor() as i32, rect.w.ceil() as u32, rect.h.ceil() as u32);
+                out.pinch(x, y, w, h, scale);
+            }
+        };
         if let Some(a) = pressing.filter(|a| *a == Action::CloseSearch || (*a == Action::Open(Screen::Search) && frame.fold.is_some())) {
             let r = frame.hits.iter().find(|h| h.action == a).expect("a button held down is on its page").rect;
             match frame.shown(r, offset) {
-                Some(r) if a == Action::CloseSearch => widgets::cancel_held(out, t, r),
-                Some(r) => widgets::search_bar_held(out, t, r),
+                Some(r) if a == Action::CloseSearch => {
+                    widgets::cancel_held(out, t, r);
+                    pinch_icon(out, r);
+                }
+                Some(r) => {
+                    widgets::search_bar_held(out, t, r);
+                    pinch_icon(out, r);
+                }
                 None => {}
+            }
+        } else if let Some(action) = self.expressive.icon_action() {
+            if let Some(hit) = frame.hits.iter().find(|h| h.action == action)
+                && let Some(r) = frame.shown(hit.rect, offset)
+            {
+                pinch_icon(out, r);
             }
         }
         if let Some(caret) = frame.caret.as_ref().filter(|_| view.caret) {
@@ -519,7 +551,11 @@ impl App {
             }
         }
         if let Some((p, top)) = strip {
-            out.put(&p.canvas, top.round() as i32);
+            if t.wallpaper {
+                out.lay(&p.canvas, 0, top.round() as i32, 1.0);
+            } else {
+                out.put(&p.canvas, top.round() as i32);
+            }
             shine(out, Group::Strip);
         }
         if let Some(d) = &frame.dock
@@ -537,6 +573,9 @@ impl App {
             } else {
                 widgets::back_arrow(out, t, t.pal.text);
             }
+            if pressing == Some(Action::Back) || self.expressive.icon_action() == Some(Action::Back) {
+                pinch_icon(out, widgets::back_rect(t));
+            }
         }
         if let Some((glyph, action)) = frame.button {
             let (_, chip, x, y) = self.button_chip.as_ref().expect("a page's round button is drawn with its chip");
@@ -545,6 +584,9 @@ impl App {
                 widgets::button_held(out, t, glyph);
             } else {
                 widgets::button_glyph(out, t, glyph, t.pal.text);
+            }
+            if pressing == Some(action) || self.expressive.icon_action() == Some(action) {
+                pinch_icon(out, widgets::button_rect(t));
             }
         }
         if frame.back || frame.button.is_some() {
@@ -788,7 +830,7 @@ mod tests {
         ];
         for t in [Theme::light(W, H, PPD), Theme::dark(W, H, PPD).pressed()] {
             for screen in screens {
-                let cx = |band| Ctx { t: &t, f: &f, info: &i, state: &state, term: None, band };
+                let cx = |band| Ctx { t: &t, f: &f, info: &i, state: &state, term: None, vnc: None, band };
                 let whole = pages::render(screen, &cx(None)).canvas;
                 let row = whole.w as usize * 4;
                 let differs = |c: &Canvas| c.data.chunks(row).zip(whole.data.chunks(row)).position(|(a, b)| a != b);
@@ -833,7 +875,7 @@ mod tests {
             bands += 1;
         }
         let t = app.theme();
-        let whole = pages::render(Screen::Settings, &Ctx { t: &t, f: &f, info: &i, state: &app.state, term: None, band: None }).canvas;
+        let whole = pages::render(Screen::Settings, &Ctx { t: &t, f: &f, info: &i, state: &app.state, term: None, vnc: None, band: None }).canvas;
         let page = &app.frame.as_ref().unwrap().canvas;
         assert!(whole.h > H + H / 4, "a page well over a screen long, drawn in {bands} more bands");
         assert!(page.whole() && page.data == whole.data, "the page drawn a band at a time is the page drawn whole");
@@ -847,7 +889,7 @@ mod tests {
         app.compose(&mut out, &f, &i, "12:00", 0);
         let anew = |app: &App| {
             let t = app.theme();
-            pages::render(Screen::Search, &Ctx { t: &t, f: &f, info: &i, state: &app.state, term: None, band: None })
+            pages::render(Screen::Search, &Ctx { t: &t, f: &f, info: &i, state: &app.state, term: None, vnc: None, band: None })
         };
         for cap in [Cap::Char('b'), Cap::Char('f'), Cap::Space, Cap::Backspace, Cap::Shift, Cap::Char('q')] {
             let (x, y) = spot(&mut app, &f, &i, Action::Type(cap));

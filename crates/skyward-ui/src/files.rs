@@ -63,7 +63,11 @@ struct Palette {
 }
 
 fn palette(t: &Theme) -> Palette {
-    if t.dark {
+    if t.style == crate::theme::UiStyle::MaterialExpressive {
+        Palette { page: if t.wallpaper { t.pal.bg.with_alpha(0) } else { t.pal.bg }, name: t.pal.text, line: t.pal.subtitle, note: t.pal.subtitle,
+            chevron: t.pal.outline, pill: t.pal.track, pill_text: t.pal.text,
+            here: t.pal.accent, here_text: t.pal.on_accent, arrow: t.pal.outline }
+    } else if t.dark {
         Palette {
             page: Rgba::rgb(0, 0, 0),
             name: Rgba::rgb(242, 242, 242),
@@ -234,7 +238,11 @@ pub fn row(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, e: &FileRow, now: i64,
     let size = m.dp(ICON_DP);
     let folder = matches!(e.kind, FileKind::Folder { .. } | FileKind::Link { folder: true, .. });
     let (ix, iy) = (m.dp(SIDE_DP), cy - size / 2.0);
-    if folder {
+    if t.style == crate::theme::UiStyle::MaterialExpressive {
+        let icon = if folder { crate::icons::Icon::Folder } else { crate::icons::Icon::Log };
+        c.fill_round_rect(ix, iy, size, size, m.dp(12.0), t.pal.track);
+        crate::icons::glyph(c, icon, ix + size / 2.0, cy, size * 0.65, t.pal.text);
+    } else if folder {
         folder_icon(c, ix, iy, size);
     } else {
         let kind = match e.kind {

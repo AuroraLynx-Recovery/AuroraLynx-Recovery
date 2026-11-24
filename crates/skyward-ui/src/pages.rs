@@ -46,6 +46,8 @@ pub struct Ctx<'a> {
     pub state: &'a State,
     /// The shell the terminal page shows, once one has started.
     pub term: Option<&'a Term>,
+    /// The VNC session the remote-picture page shows.
+    pub vnc: Option<&'a crate::vncview::Link>,
     /// The part of the page to draw; all of it if none is given. The page
     /// is laid out whole either way.
     pub band: Option<Band>,
@@ -124,6 +126,8 @@ pub fn render(screen: Screen, cx: &Ctx) -> Frame {
         Screen::WlanPassword => wlan_password(cx),
         Screen::WlanNetwork => wlan_network(cx),
         Screen::WlanAdd => wlan_add(cx),
+        Screen::Vnc => vnc(cx),
+        Screen::Agent => agent(cx),
     }
 }
 
@@ -480,6 +484,8 @@ fn material_advanced(cx: &Ctx) -> Frame {
     tool_group(cx, &mut c, &mut out, &mut y, &[
         (Row::new(l.pick(texts::page::FILES)).icon(t.pal.accent, Icon::Folder), Screen::Files),
         (Row::new(l.pick(texts::page::TERMINAL)).icon(t.pal.accent, Icon::Terminal), Screen::Terminal),
+        (Row::new(l.pick(texts::page::AGENT)).icon(t.pal.accent, Icon::Terminal), Screen::Agent),
+        (Row::new(l.pick(texts::page::VNC)).icon(t.pal.accent, Icon::Globe), Screen::Vnc),
         (Row::new(l.pick(texts::page::RELABEL)).icon(t.pal.accent, Icon::Shield), Screen::Relabel),
         (Row::new(l.pick(texts::page::FILESYSTEMS)).icon(t.pal.danger, Icon::Mount), Screen::Filesystems),
         (Row::new(l.pick(texts::page::LOGS)).icon(t.pal.accent, Icon::Log), Screen::Logs),
@@ -571,6 +577,8 @@ fn material_settings(cx: &Ctx) -> Frame {
     y = widgets::section(&mut c, t, f, y - t.m.card_gap, l.pick(texts::settings::DEBUGGING));
     tool_group(cx, &mut c, &mut out, &mut y, &[
         (Row::new(l.pick(texts::page::RECOVERY_CREDENTIAL)).icon(t.pal.accent, Icon::Lock), Screen::RecoveryLock),
+        (Row::new(l.pick(texts::page::AGENT)).icon(t.pal.accent, Icon::Terminal), Screen::Agent),
+        (Row::new(l.pick(texts::page::VNC)).icon(t.pal.accent, Icon::Globe), Screen::Vnc),
     ]);
     Frame::new(t, fit(c, t, y), out, l.pick(texts::page::SETTINGS), top)
 }
@@ -642,8 +650,12 @@ pub fn settings(cx: &Ctx) -> Frame {
     out.extend(hits(&usb.rows, &[Action::Toggle(Switch::FileTransfer)]));
     y = widgets::footnote(&mut c, t, f, usb.bottom, l.pick(texts::settings::FILE_TRANSFER_NOTE));
     y = widgets::section(&mut c, t, f, y, l.pick(texts::settings::DEBUGGING));
-    let debug = widgets::list(&mut c, t, f, y, &[Row::new(l.pick(texts::page::TERMINAL)).icon(SLATE, Icon::Terminal)]);
-    out.extend(hits(&debug.rows, &[Action::Open(Screen::Terminal)]));
+    let debug = widgets::list(&mut c, t, f, y, &[
+        Row::new(l.pick(texts::page::TERMINAL)).icon(SLATE, Icon::Terminal),
+        Row::new(l.pick(texts::page::AGENT)).icon(SLATE, Icon::Terminal),
+        Row::new(l.pick(texts::page::VNC)).icon(BLUE, Icon::Globe),
+    ]);
+    out.extend(hits(&debug.rows, &[Action::Open(Screen::Terminal), Action::Open(Screen::Agent), Action::Open(Screen::Vnc)]));
     y = widgets::section(&mut c, t, f, debug.bottom, l.pick(texts::settings::ABOUT));
     let mut rows = vec![Row::new(l.pick(texts::page::ABOUT)).trail(Trail::Value(VERSION))];
     let mut opens = vec![Action::Open(Screen::About)];
@@ -735,15 +747,42 @@ fn appearance_choices(cx: &Ctx, c: &mut Canvas, out: &mut Vec<Hit>, top: f32, ti
     let gap = m.dp(2.0);
     let inner = w - m.dp(32.0);
     let preferred = choices.iter().map(|(label, _, _)| c.text_width(&f.label, label, m.dp(14.0))).sum::<f32>();
+    let mut buttons = Vec::with_capacity(choices.len());
     let mut x = left;
-    for (label, selected, action) in choices.iter().copied() {
+    for (label, _, _) in choices.iter().copied() {
         let proportion = (c.text_width(&f.label, label, m.dp(14.0)) + m.dp(50.0)) / (preferred + m.dp(50.0) * choices.len() as f32);
         let button = Rect::new(x, top + m.dp(39.0), (inner - gap * (choices.len() - 1) as f32) * proportion, m.dp(48.0));
-        let (fill, ink) = if selected { (t.pal.accent, t.pal.on_accent) } else { (t.pal.track, t.pal.text) };
-        c.fill_round_rect(button.x, button.y, button.w, button.h, if selected { button.h / 2.0 } else { m.dp(14.0) }, fill);
-        c.text_center_in(&f.label, label, button.x + button.w / 2.0, button.y + button.h / 2.0, m.dp(14.0), ink, button.w - m.dp(12.0));
-        out.push(Hit { rect: button, action });
+        buttons.push(button);
         x += button.w + gap;
+    }
+    let sliding = t.motion.segment_on && (t.motion.segment_top - top).abs() < 2.0 && (choices.len() as u8) > t.motion.segment_from.max(t.motion.segment_to);
+    let pill = sliding.then(|| {
+        let from = buttons[t.motion.segment_from as usize];
+        let to = buttons[t.motion.segment_to as usize];
+        let u = t.motion.segment.clamp(0.0, 1.0);
+        Rect::new(from.x + (to.x - from.x) * u, from.y, from.w + (to.w - from.w) * u, from.h)
+    });
+    for ((label, selected, action), button) in choices.iter().copied().zip(&buttons) {
+        let on_pill = pill.is_some_and(|pill| (button.x - pill.x).abs() < button.w * 0.35);
+        let selected = if sliding { false } else { selected };
+        let (fill, ink, radius) = if selected || on_pill {
+            (t.pal.accent, t.pal.on_accent, button.h / 2.0)
+        } else {
+            (t.pal.track, t.pal.text, m.dp(14.0))
+        };
+        if !on_pill {
+            c.fill_round_rect(button.x, button.y, button.w, button.h, radius, fill);
+        }
+        c.text_center_in(&f.label, label, button.x + button.w / 2.0, button.y + button.h / 2.0, m.dp(14.0), if on_pill { t.pal.text } else { ink }, button.w - m.dp(12.0));
+        out.push(Hit { rect: *button, action });
+    }
+    if let Some(pill) = pill {
+        c.fill_round_rect(pill.x, pill.y, pill.w, pill.h, pill.h / 2.0, t.pal.accent);
+        for ((label, _, _), button) in choices.iter().copied().zip(&buttons) {
+            if (button.x - pill.x).abs() < button.w * 0.35 {
+                c.text_center_in(&f.label, label, button.x + button.w / 2.0, button.y + button.h / 2.0, m.dp(14.0), t.pal.on_accent, button.w - m.dp(12.0));
+            }
+        }
     }
     top + h
 }
@@ -866,6 +905,23 @@ const AUTHOR: &str = "© 2026 Kirk Lin";
 /// hardware and link cards scrolling over it. Only the cards are drawn
 /// here; the canvas is clear wherever the field shows.
 pub fn about(cx: &Ctx) -> Frame {
+    if cx.t.style == UiStyle::MaterialExpressive {
+        let (t, f, i, l) = (cx.t, cx.f, cx.info, cx.state.lang);
+        let mut canvas = long_page(cx);
+        let top = t.m.content_top;
+        let facts = [
+            (l.pick(texts::specs::MODEL), i.model.clone()),
+            (l.pick(texts::specs::RECOVERY_VERSION), format!("AuroraLynx {VERSION}")),
+            (l.pick(texts::specs::STORAGE), fmt::capacity(i.storage.total)),
+        ];
+        let bottom = widgets::info_card(&mut canvas, t, f, top, &facts);
+        let links = widgets::list(&mut canvas, t, f, bottom + t.m.card_gap, &[
+            Row::new(l.pick(texts::page::SPECS)), Row::new(l.pick(texts::page::LOGS)),
+            Row::new(l.pick(texts::page::LICENSE)),
+        ]);
+        let out = hits(&links.rows, &[Action::Open(Screen::Specs), Action::Open(Screen::Logs), Action::Open(Screen::License)]);
+        return Frame::new(t, fit(canvas, t, links.bottom), out, l.pick(texts::page::ABOUT), top);
+    }
     let (t, f) = (cx.t, cx.f);
     let m = &t.m;
     // The page is drawn whole, under the field: laid out first to learn
@@ -2612,6 +2668,8 @@ pub fn advanced(cx: &Ctx) -> Frame {
     let tools = widgets::list(&mut c, t, f, top, &[
         Row::new(l.pick(texts::page::FILES)).icon(BLUE, Icon::Folder),
         Row::new(l.pick(texts::page::TERMINAL)).icon(SLATE, Icon::Terminal),
+        Row::new(l.pick(texts::page::AGENT)).icon(SLATE, Icon::Terminal),
+        Row::new(l.pick(texts::page::VNC)).icon(BLUE, Icon::Globe),
         Row::new(if l == Lang::Hans { "Recovery 密码" } else { "Recovery credential" }).icon(PURPLE, Icon::Lock),
         Row::new(l.pick(texts::material_ui::FLASH_PARTITIONS)).icon(RED, Icon::Install),
         Row::new(if l == Lang::Hans { "提取分区" } else { "Extract partitions" }).icon(BLUE, Icon::Folder),
@@ -2624,6 +2682,8 @@ pub fn advanced(cx: &Ctx) -> Frame {
     let out = hits(&tools.rows, &[
         Action::Open(Screen::Files),
         Action::Open(Screen::Terminal),
+        Action::Open(Screen::Agent),
+        Action::Open(Screen::Vnc),
         Action::Open(Screen::RecoveryLock),
         Action::Open(Screen::PartitionFlash),
         Action::Open(Screen::ExtractPartitions),
@@ -3665,6 +3725,112 @@ pub fn file_job(cx: &Ctx) -> Frame {
         (FileTask::Delete { .. }, false) => said::DELETE_INCOMPLETE,
     });
     Frame { back: job.outcome.is_some(), ..Frame::new(t, c, out, title, top) }
+}
+
+/// A remote picture. Disconnected, the address and password; connected, the
+/// framebuffer, with touch on the picture and the keyboard for the remote
+/// desktop when that field is chosen.
+fn vnc(cx: &Ctx) -> Frame {
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let mut c = page(cx);
+    let mut out = Vec::new();
+    let top = t.m.content_top;
+    let picture = cx.vnc.and_then(|link| link.picture());
+    let live = cx.vnc.is_some_and(|link| !matches!(link.phase(), crate::vncview::Phase::Failed(_)));
+    if live {
+        let keyboard = s.vnc_field == 2;
+        let area = crate::vncview::slot(t, keyboard);
+        if let Some(raster) = &picture {
+            crate::vncview::paint(&mut c, area, raster);
+        }
+        if let Some(placed) = picture.as_ref().map(|raster| crate::vncview::letterbox(area, raster.w, raster.h)).filter(|placed| placed.w >= 1.0 && placed.h >= 1.0) {
+            out.push(Hit { rect: Rect::new(placed.x, placed.y, placed.w, placed.h), action: Action::VncPoint });
+        }
+        let status = match cx.vnc.map(|link| link.phase()) {
+            Some(crate::vncview::Phase::Connecting) => l.pick(texts::vnc::CONNECTING).to_string(),
+            Some(crate::vncview::Phase::Failed(why)) => why,
+            _ => String::new(),
+        };
+        if !status.is_empty() {
+            widgets::footnote(&mut c, t, f, area.y, &status);
+        }
+        let rows = widgets::list(&mut c, t, f, area.y + area.h, &[
+            Row::new(l.pick(texts::vnc::DISCONNECT)),
+            Row::new(l.pick(texts::vnc::KEYBOARD)),
+        ]);
+        let field = if keyboard { 0 } else { 2 };
+        out.extend(hits(&rows.rows, &[Action::VncDisconnect, Action::VncField(field)]));
+        if keyboard {
+            keyboard_hits(&mut c, t, f, s, l.pick(texts::keyboard::ENTER), &mut out);
+        }
+    } else {
+        let mut y = widgets::paragraph(&mut c, t, f, top, l.pick(texts::vnc::HOST));
+        let host = Rect::new(t.m.margin, y, t.m.w as f32 - t.m.margin * 2.0, t.m.dp(56.0));
+        let (y_after, _) = widgets::text_field(&mut c, t, f, y, &s.vnc_host);
+        out.push(Hit { rect: host, action: Action::VncField(0) });
+        y = widgets::paragraph(&mut c, t, f, y_after, l.pick(texts::vnc::PASSWORD));
+        let password = Rect::new(t.m.margin, y, t.m.w as f32 - t.m.margin * 2.0, t.m.dp(56.0));
+        let (y_after, _) = widgets::text_field(&mut c, t, f, y, &s.vnc_password);
+        out.push(Hit { rect: password, action: Action::VncField(1) });
+        let connect = widgets::list(&mut c, t, f, y_after, &[Row::new(l.pick(texts::vnc::CONNECT))]);
+        out.extend(hits(&connect.rows, &[Action::VncConnect]));
+        let why = cx.vnc.and_then(|link| match link.phase() {
+            crate::vncview::Phase::Failed(text) => Some(text),
+            crate::vncview::Phase::Connecting => Some(l.pick(texts::vnc::CONNECTING).to_string()),
+            crate::vncview::Phase::Live => None,
+        });
+        match &why {
+            Some(text) => {
+                widgets::footnote(&mut c, t, f, connect.bottom, text);
+            }
+            None => {
+                widgets::footnote(&mut c, t, f, connect.bottom, l.pick(texts::vnc::NOTE));
+            }
+        }
+        keyboard_hits(&mut c, t, f, s, l.pick(texts::vnc::CONNECT), &mut out);
+    }
+    Frame::new(t, c, out, l.pick(texts::page::VNC), top)
+}
+
+/// Chat with an OpenAI-compatible API. The address, model and key sit at
+/// the top; the thread and the box to type into sit under them.
+fn agent(cx: &Ctx) -> Frame {
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let m = &t.m;
+    let mut c = long_page(cx);
+    let mut out = Vec::new();
+    let top = m.content_top;
+    let field = |y: f32| Rect::new(m.margin, y, m.w as f32 - m.margin * 2.0, m.dp(56.0));
+    let mut y = widgets::paragraph(&mut c, t, f, top, l.pick(texts::agent::URL));
+    let (y_after, _) = widgets::text_field(&mut c, t, f, y, &s.agent_url);
+    out.push(Hit { rect: field(y), action: Action::AgentField(0) });
+    y = widgets::paragraph(&mut c, t, f, y_after, l.pick(texts::agent::MODEL));
+    let (y_after, _) = widgets::text_field(&mut c, t, f, y, &s.agent_model);
+    out.push(Hit { rect: field(y), action: Action::AgentField(1) });
+    y = widgets::paragraph(&mut c, t, f, y_after, l.pick(texts::agent::KEY));
+    let shown = "•".repeat(s.agent_key.chars().count());
+    let key_top = y;
+    let (after_key, _) = widgets::text_field(&mut c, t, f, y, &shown);
+    out.push(Hit { rect: field(key_top), action: Action::AgentField(2) });
+    y = widgets::footnote(&mut c, t, f, after_key, l.pick(texts::agent::NOTE));
+    for line in &s.agent_chat {
+        let text = match line {
+            crate::agent::Line::User(text) => format!("> {text}"),
+            crate::agent::Line::Assistant(text) => text.clone(),
+            crate::agent::Line::Tool { name, detail, result } => format!("{name} {detail}\n{result}"),
+        };
+        y = widgets::paragraph(&mut c, t, f, y, &text);
+    }
+    if s.agent_busy {
+        y = widgets::footnote(&mut c, t, f, y, l.pick(texts::agent::WORKING));
+    }
+    y = widgets::paragraph(&mut c, t, f, y, l.pick(texts::agent::DRAFT));
+    let (y_after, caret) = widgets::text_field(&mut c, t, f, y, &s.agent_draft);
+    out.push(Hit { rect: field(y), action: Action::AgentField(3) });
+    let send = widgets::list(&mut c, t, f, y_after, &[Row::new(l.pick(texts::agent::SEND))]);
+    out.extend(hits(&send.rows, &[Action::AgentSend]));
+    keyboard_hits(&mut c, t, f, s, l.pick(texts::agent::SEND), &mut out);
+    Frame { caret: Some(caret), ..Frame::new(t, fit(c, t, send.bottom), out, l.pick(texts::page::AGENT), top) }
 }
 
 /// A shell on a terminal: the screen it writes, the keys a phone keyboard

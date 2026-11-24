@@ -133,6 +133,30 @@ fn kept(n: usize) -> Vec<u8> {
     kept.unwrap_or_else(|| Vec::with_capacity(n))
 }
 
+fn sample_bilinear(src: &Canvas, x: f32, y: f32) -> [u8; 4] {
+    let (w, h) = (src.w as i32, src.h as i32);
+    if w <= 0 || h <= 0 {
+        return [0, 0, 0, 255];
+    }
+    let x = x.clamp(0.0, (w - 1) as f32);
+    let y = y.clamp(0.0, (h - 1) as f32);
+    let (x0, y0) = (x.floor() as i32, y.floor() as i32);
+    let (x1, y1) = ((x0 + 1).min(w - 1), (y0 + 1).min(h - 1));
+    let (tx, ty) = (x - x0 as f32, y - y0 as f32);
+    let at = |x: i32, y: i32| {
+        let i = ((y * w + x) * 4) as usize;
+        [src.data[i], src.data[i + 1], src.data[i + 2], src.data[i + 3]]
+    };
+    let mix = |a: [u8; 4], b: [u8; 4], t: f32| {
+        let mut o = [0; 4];
+        for c in 0..4 {
+            o[c] = (a[c] as f32 + (b[c] as f32 - a[c] as f32) * t).round() as u8;
+        }
+        o
+    };
+    mix(mix(at(x0, y0), at(x1, y0), tx), mix(at(x0, y1), at(x1, y1), tx), ty)
+}
+
 // Drawing primitives take geometry plus style as plain arguments.
 #[allow(clippy::too_many_arguments)]
 impl Canvas {
@@ -448,6 +472,48 @@ impl Canvas {
                     let target = is[c] as f32 * na + under * (1.0 - na);
                     d[c] = (o + (target - o) * k).round().clamp(0.0, 255.0) as u8;
                 }
+            }
+        }
+    }
+
+    /// Draw the pixels of the rectangle (`x`, `y`, `w`, `h`) again, scaled
+    /// about its centre by `scale`. The ring this leaves shows the colour
+    /// just outside the rectangle, which is the page behind a control.
+    pub fn pinch(&mut self, x: i32, y: i32, w: u32, h: u32, scale: f32) {
+        if w == 0 || h == 0 || (scale - 1.0).abs() < 0.004 || !self.whole() {
+            return;
+        }
+        let (sw, sh) = (self.w as i32, self.h as i32);
+        let x1 = x + w as i32;
+        let y1 = y + h as i32;
+        let (vx0, vy0) = (x.max(0), y.max(0));
+        let (vx1, vy1) = (x1.min(sw), y1.min(sh));
+        if vx0 >= vx1 || vy0 >= vy1 {
+            return;
+        }
+        // Freeze a one-pixel halo. A sample that falls outside the card
+        // reads that halo, so the ring is the page behind the card. Reading
+        // the live pixel instead copies the card back over itself.
+        let hx0 = (vx0 - 1).max(0);
+        let hy0 = (vy0 - 1).max(0);
+        let hx1 = (vx1 + 1).min(sw);
+        let hy1 = (vy1 + 1).min(sh);
+        let shot = self.crop(hx0 as u32, hy0 as u32, (hx1 - hx0) as u32, (hy1 - hy0) as u32);
+        let (cx, cy) = (x as f32 + w as f32 / 2.0, y as f32 + h as f32 / 2.0);
+        for py in vy0..vy1 {
+            for px in vx0..vx1 {
+                let sx = cx + (px as f32 + 0.5 - cx) / scale;
+                let sy = cy + (py as f32 + 0.5 - cy) / scale;
+                let pixel = if sx >= x as f32 && sy >= y as f32 && sx < x1 as f32 && sy < y1 as f32 {
+                    sample_bilinear(&shot, sx - hx0 as f32, sy - hy0 as f32)
+                } else {
+                    let ox = if sx < x as f32 { x - 1 } else if sx >= x1 as f32 { x1 } else { px };
+                    let oy = if sy < y as f32 { y - 1 } else if sy >= y1 as f32 { y1 } else { py };
+                    let (ox, oy) = (ox.clamp(hx0, hx1 - 1), oy.clamp(hy0, hy1 - 1));
+                    sample_bilinear(&shot, ox as f32 - hx0 as f32, oy as f32 - hy0 as f32)
+                };
+                let at = ((py * sw + px) * 4) as usize;
+                self.data[at..at + 4].copy_from_slice(&pixel);
             }
         }
     }
@@ -1482,6 +1548,16 @@ mod tests {
             assert_eq!(at(5 + 6, y), 50 + 60, "past the corner the page is whole");
         }
         assert!(at(6, 2) > 0 && at(6, 2) < 60, "the curve is smoothed: {}", at(6, 2));
+    }
+
+    #[test]
+    fn pinch_shrinks_a_card_onto_the_page_behind_it() {
+        let mut c = Canvas::filled(20, 20, Rgba::rgb(10, 20, 30));
+        c.fill_rect(4.0, 4.0, 12.0, 12.0, Rgba::rgb(200, 10, 10));
+        c.pinch(4, 4, 12, 12, 0.5);
+        let at = |x: u32, y: u32| c.data[((y * 20 + x) * 4) as usize];
+        assert_eq!(at(4, 4), 10, "the ring is the page, not the card copied back");
+        assert_eq!(at(10, 10), 200, "the middle of the card stays");
     }
 
     #[test]

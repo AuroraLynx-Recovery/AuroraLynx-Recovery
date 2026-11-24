@@ -1,3 +1,4 @@
+pub mod agent;
 pub mod app;
 mod battery_aosp17;
 pub mod canvas;
@@ -21,6 +22,7 @@ pub mod settings;
 pub mod sprite;
 pub mod surface;
 pub mod term;
+pub mod vncview;
 pub(crate) mod texts;
 pub mod theme;
 pub mod widgets;

@@ -5,6 +5,7 @@ use super::*;
 impl App {
     /// Carry out a tapped control.
     pub(super) fn act(&mut self, action: Action, now: u64) -> Vec<Effect> {
+        self.note_control_motion(&action, now);
         let l = self.state.lang;
         match action {
             Action::Open(s) => {
@@ -706,7 +707,76 @@ impl App {
                 }
             }
             Action::Unavailable(text) => self.say(text, now),
+            Action::VncConnect => {
+                let Some(addr) = crate::vncview::endpoint(&self.state.vnc_host) else {
+                    return Vec::new();
+                };
+                self.vnc = Some(crate::vncview::Link::start(addr, self.state.vnc_password.clone()));
+                self.vnc_seen = 0;
+                self.refresh();
+            }
+            Action::VncDisconnect => {
+                self.vnc = None;
+                self.state.vnc_field = 0;
+                self.refresh();
+            }
+            Action::VncField(field) => {
+                self.state.vnc_field = field;
+                self.refresh();
+            }
+            Action::VncPoint => {}
+            Action::AgentField(field) => {
+                self.state.agent_field = field;
+                self.refresh();
+            }
+            Action::AgentSend => return self.agent_send(),
         }
+        Vec::new()
+    }
+
+    fn agent_send(&mut self) -> Vec<Effect> {
+        if self.state.agent_busy {
+            return Vec::new();
+        }
+        let text = self.state.agent_draft.trim().to_string();
+        if text.is_empty() {
+            return Vec::new();
+        }
+        self.state.agent_draft.clear();
+        self.state.agent_chat.push(crate::agent::Line::User(text));
+        self.state.agent_busy = true;
+        self.agent = Some(crate::agent::Job::start(
+            self.state.agent_url.clone(),
+            self.state.agent_model.clone(),
+            self.state.agent_key.clone(),
+            self.state.agent_chat.clone(),
+        ));
+        self.agent_seen = 0;
+        self.refresh();
+        Vec::new()
+    }
+
+    /// A key for the remote desktop: Latin-1 keysyms, pressed and released.
+    fn remote_key(&mut self, cap: Cap) -> Vec<Effect> {
+        match cap {
+            Cap::Shift => {
+                self.state.layer = if self.state.layer == Layer::Shifted { Layer::Letters } else { Layer::Shifted };
+            }
+            Cap::Show(layer) => self.state.layer = layer,
+            other => {
+                let shifted = self.state.layer == Layer::Shifted;
+                if let Some(sym) = crate::vncview::keysym(other, shifted) {
+                    if let Some(link) = &self.vnc {
+                        link.key(sym, true);
+                        link.key(sym, false);
+                    }
+                    if shifted {
+                        self.state.layer = Layer::Letters;
+                    }
+                }
+            }
+        }
+        self.refresh();
         Vec::new()
     }
 
@@ -728,6 +798,16 @@ impl App {
                     Field::Password => &mut self.state.password,
                 }
             }
+            Screen::Vnc => match self.state.vnc_field {
+                1 => &mut self.state.vnc_password,
+                _ => &mut self.state.vnc_host,
+            },
+            Screen::Agent => match self.state.agent_field {
+                0 => &mut self.state.agent_url,
+                1 => &mut self.state.agent_model,
+                2 => &mut self.state.agent_key,
+                _ => &mut self.state.agent_draft,
+            },
             s => panic!("{s:?} has no text field"),
         }
     }
@@ -735,6 +815,9 @@ impl App {
     /// A key of the on-screen keyboard. A capital lasts one letter; return
     /// opens the first result of a search, and runs a terminal's command.
     fn type_key(&mut self, cap: Cap, now: u64) -> Vec<Effect> {
+        if self.screen() == Screen::Vnc && self.state.vnc_field == 2 {
+            return self.remote_key(cap);
+        }
         let (l, layer) = (self.state.lang, self.state.layer);
         match cap {
             Cap::Char(ch) => {
@@ -766,6 +849,8 @@ impl App {
             }
             Cap::Show(layer) => self.state.layer = layer,
             Cap::Enter => match self.screen() {
+                Screen::Agent => return self.act(Action::AgentSend, now),
+                Screen::Vnc => return self.act(Action::VncConnect, now),
                 Screen::Search => {
                     if let Some(first) = search::find_on(&self.state.search, l, |screen| self.state.offers(screen)).first() {
                         return self.act(Action::Open(first.screen), now);

@@ -21,6 +21,8 @@ use crate::sprite::{Blurs, Sprite};
 use crate::search;
 use crate::settings::Settings;
 use crate::term::{self, Term, TermKey};
+use crate::agent::Job;
+use crate::vncview::Link;
 use crate::texts;
 use crate::theme::{Theme, UiStyle};
 use crate::widgets::{self, Bar, Bolt, Cap, Layer, WlanMark};
@@ -39,6 +41,7 @@ mod backup;
 mod decrypt;
 mod draw;
 mod entry;
+mod expressive;
 mod filesystem;
 mod frame;
 mod input;
@@ -230,6 +233,11 @@ pub enum Screen {
     /// A network added by hand: its name, how it is protected and its
     /// password, typed on the screen's keyboard.
     WlanAdd,
+    /// A VNC framebuffer. The picture is drawn on the computer named on the
+    /// page; this phone only shows it and sends touch and keys.
+    Vnc,
+    /// Chat with an API the user names, which may run commands here.
+    Agent,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -448,6 +456,19 @@ pub enum Action {
     StopSkywardUpdate,
     /// A control whose work is not wired up yet; touching it says so.
     Unavailable(&'static str),
+    /// Connect to the address typed on the VNC page.
+    VncConnect,
+    /// Close the VNC session.
+    VncDisconnect,
+    /// Which field the keyboard types into: 0 the address, 1 the password,
+    /// 2 the remote desktop.
+    VncField(u8),
+    /// The remote picture. The finger's point is mapped when it lifts or drags.
+    VncPoint,
+    /// Which field the assistant page types into: 0 address, 1 model, 2 key, 3 the message.
+    AgentField(u8),
+    /// Send the typed message to the API.
+    AgentSend,
 }
 
 /// One finger, in screen pixels.
@@ -694,6 +715,8 @@ enum Drag {
     /// A finger that landed just after the panel lit; nothing it does
     /// counts until it lifts.
     Waking,
+    /// A finger dragging on the remote picture, last at (`x`, `y`).
+    Remote { x: f32, y: f32 },
 }
 
 /// Where the keys are on a page.
@@ -1037,6 +1060,10 @@ struct RowPress {
     rect: Rect,
     rise: u64,
     fall: Option<u64>,
+    /// When the card's 0.97 scale spring started. Expressive starts at the
+    /// finger; the darken still waits for `rise`.
+    scale_from: u64,
+    scale_fall: Option<u64>,
 }
 
 impl RowPress {
@@ -1052,7 +1079,33 @@ impl RowPress {
         }
     }
 
-    /// Whether it has faded back after being let go.
+    /// How far a Material card has sprung toward its pressed scale, 0 at
+    /// rest and 1 at the 0.97 scale, free to pass either end. SukiSU starts
+    /// this the moment the finger is down, with damping 0.5 and stiffness 400.
+    fn squeeze(&self, now: u64) -> f32 {
+        if now < self.scale_from {
+            return 0.0;
+        }
+        let up = motion::compose(now - self.scale_from, 0.0, 1.0, 0.5).0;
+        match self.scale_fall {
+            Some(fall) if now >= fall => {
+                let at = motion::compose(fall.saturating_sub(self.scale_from), 0.0, 1.0, 0.5).0;
+                motion::compose(now - fall, at, 0.0, 0.5).0
+            }
+            _ => up,
+        }
+    }
+
+    fn squeeze_settled(&self, now: u64) -> bool {
+        if now < self.scale_from {
+            return true;
+        }
+        match self.scale_fall {
+            Some(fall) if now >= fall => motion::compose(now - fall, 1.0, 0.0, 0.5).1 && self.squeeze(now).abs() < 0.02,
+            _ => motion::compose(now - self.scale_from, 0.0, 1.0, 0.5).1,
+        }
+    }
+
     fn gone(&self, now: u64) -> bool {
         self.fall.is_some_and(|fall| now >= fall && motion::settle(now - fall, ROW_PRESS_PERIOD) == 1.0)
     }
@@ -1066,6 +1119,7 @@ impl RowPress {
     /// The finger lifted at `now`: a row that had not shown pressed yet
     /// shows it a moment.
     fn lift(&mut self, now: u64) {
+        self.scale_fall = Some(now);
         if now < self.rise {
             self.rise = now;
             self.fall = Some(now + QUICK_TAP_MS);
@@ -1089,6 +1143,8 @@ struct View {
     caret: bool,
     row: f32,
     pressing: Option<Action>,
+    /// Material card press, 0 at rest. Miuix leaves this at 0.
+    squeeze: f32,
 }
 
 /// A page sliding over another as it opens or goes back, as the stock
@@ -1218,6 +1274,13 @@ pub struct App {
     /// The terminal page's shell, from when it is first opened; it goes on
     /// while other pages show.
     term: Option<Term>,
+    /// The VNC session, only while that page shows.
+    vnc: Option<Link>,
+    /// The session generation last drawn, so a new picture marks the page dirty.
+    vnc_seen: u64,
+    /// An assistant turn, until it finishes.
+    agent: Option<std::sync::Arc<Job>>,
+    agent_seen: u64,
     display_on: bool,
     /// When the screen was last touched or a key pressed; set on the first
     /// tick, so the time before the UI started does not count.
@@ -1254,6 +1317,7 @@ pub struct App {
     /// the part of the page it lies on as drawn and as drawn held down.
     row_press: Option<RowPress>,
     row_art: Option<(Canvas, Canvas)>,
+    expressive: expressive::Expressive,
     /// How the page showed on the last frame, while it can be drawn so
     /// again: until it is rendered anew.
     shown: Option<View>,
@@ -1322,6 +1386,10 @@ impl App {
             snap: false,
             glow: None,
             term: None,
+            vnc: None,
+            vnc_seen: 0,
+            agent: None,
+            agent_seen: 0,
             display_on: true,
             active: None,
             woke_at: None,
@@ -1337,6 +1405,7 @@ impl App {
             morph: None,
             row_press: None,
             row_art: None,
+            expressive: expressive::Expressive::new(),
             shown: None,
             turn: None,
             layer: None,
@@ -1373,10 +1442,9 @@ impl App {
                 }
             };
         }
+        theme.motion = self.expressive.cue();
         theme.wallpaper = style == UiStyle::MaterialExpressive
-            && self.wallpaper.is_some()
-            && (tabs::TABS.contains(&self.screen()) || matches!(self.screen(),
-                Screen::Appearance | Screen::DisplayPreferences | Screen::LocalePreferences | Screen::Search));
+            && self.wallpaper.is_some();
         if theme.wallpaper {
             let alpha = 255 - (u16::from(self.state.appearance.transparency) * 255 / 100) as u8;
             theme.pal.card = theme.pal.card.with_alpha(alpha);
@@ -1452,6 +1520,9 @@ impl App {
                 || self.turn.is_some()
                 || self.tab_motion.is_some()
                 || self.row_press.is_some_and(|p| p.changing(now) || p.gone(now))
+                || self.row_squeeze_live(now)
+                || self.expressive.content_live(now)
+                || self.expressive.icon_live(now)
                 || self.glowing());
         // The content going dark or coming up, and the charging screen's
         // tide, move a frame at a time while the panel is lit.
@@ -1559,6 +1630,7 @@ impl App {
         {
             self.dirty = true;
         }
+        self.sample_expressive(now);
         if let Some(p) = self.row_press {
             if p.gone(now) {
                 self.row_press = None;
@@ -1646,6 +1718,34 @@ impl App {
             }
             if self.glowing() {
                 self.dirty = true;
+            }
+        }
+        if self.screen() != Screen::Vnc {
+            self.vnc = None;
+        } else if self.vnc.as_ref().is_some_and(|link| link.generation() != self.vnc_seen) {
+            self.vnc_seen = self.vnc.as_ref().map(|link| link.generation()).unwrap_or(0);
+            self.dirty = true;
+        }
+        if let Some(job) = self.agent.clone() {
+            if job.generation() != self.agent_seen {
+                self.agent_seen = job.generation();
+                self.dirty = true;
+            }
+            match job.phase() {
+                crate::agent::Phase::Working => {}
+                crate::agent::Phase::Done => {
+                    self.state.agent_chat.extend(job.extra());
+                    self.state.agent_busy = false;
+                    self.agent = None;
+                    self.refresh();
+                }
+                crate::agent::Phase::Failed(why) => {
+                    self.state.agent_chat.extend(job.extra());
+                    self.state.agent_chat.push(crate::agent::Line::Assistant(why));
+                    self.state.agent_busy = false;
+                    self.agent = None;
+                    self.refresh();
+                }
             }
         }
         self.follow_scroll(now);

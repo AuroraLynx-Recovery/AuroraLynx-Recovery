@@ -103,6 +103,7 @@ impl App {
                 self.state.confirm = 0.0;
                 self.refresh();
             }
+            Drag::Remote { x, y } => self.vnc_pointer(x, y, 0),
             Drag::Pattern => {
                 self.state.pattern.clear();
                 self.refresh();

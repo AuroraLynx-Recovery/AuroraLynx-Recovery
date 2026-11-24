@@ -59,6 +59,8 @@ pub const ENTRIES: &[Entry] = &[
     entry(ADVANCED, HOME, Screen::Advanced, keys::ADVANCED),
     entry(page::FILES, ADVANCED, Screen::Files, keys::FILES),
     entry(page::TERMINAL, ADVANCED, Screen::Terminal, keys::TERMINAL),
+    entry(page::VNC, ADVANCED, Screen::Vnc, keys::VNC),
+    entry(page::AGENT, ADVANCED, Screen::Agent, keys::AGENT),
     entry(page::RELABEL, ADVANCED, Screen::Relabel, keys::RELABEL),
     entry(page::FILESYSTEMS, ADVANCED, Screen::Filesystems, keys::FILESYSTEMS),
     entry(page::LOGS, ADVANCED, Screen::Logs, keys::LOGS),

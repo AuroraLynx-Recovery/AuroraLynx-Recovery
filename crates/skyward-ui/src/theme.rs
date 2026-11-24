@@ -1,4 +1,5 @@
 use crate::color::{over, Rgba};
+use crate::geom::Rect;
 use crate::glow::{self, Glow};
 use serde::{Deserialize, Serialize};
 
@@ -10,6 +11,53 @@ pub enum UiStyle {
     #[default]
     #[serde(other)]
     Miuix,
+}
+
+/// Live pose of Material 3 Expressive controls. Miuix leaves this at rest.
+#[derive(Clone, Copy, Debug)]
+pub struct MotionCue {
+    /// Pressed snapshot: tighter button corners and a wider switch thumb.
+    pub pose: bool,
+    /// Switch thumb travel. Negative `switch_pos` draws the settled boolean.
+    pub switch_cy: f32,
+    pub switch_pos: f32,
+    /// Slider and confirm handle, 0 at rest and 1 while held.
+    pub handle: f32,
+    /// A check inside this row scales in. Empty when nothing is popping.
+    pub check: Rect,
+    /// 0.6 as the pop starts, 1 when it has settled.
+    pub check_pop: f32,
+    /// Segmented buttons whose card starts at `segment_top`.
+    pub segment_top: f32,
+    pub segment_from: u8,
+    pub segment_to: u8,
+    /// 0 at the previous choice, 1 at the current one.
+    pub segment: f32,
+    pub segment_on: bool,
+    /// Keyboard, keypad and menu press.
+    pub key: f32,
+    /// Back, search and the bar's round button.
+    pub icon: f32,
+}
+
+impl Default for MotionCue {
+    fn default() -> Self {
+        Self {
+            pose: false,
+            switch_cy: 0.0,
+            switch_pos: -1.0,
+            handle: 0.0,
+            check: Rect::new(0.0, 0.0, 0.0, 0.0),
+            check_pop: 1.0,
+            segment_top: 0.0,
+            segment_from: 0,
+            segment_to: 0,
+            segment: 1.0,
+            segment_on: false,
+            key: 0.0,
+            icon: 0.0,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -167,16 +215,17 @@ pub struct Theme {
     pub dark: bool,
     pub style: UiStyle,
     pub wallpaper: bool,
+    pub motion: MotionCue,
 }
 
 impl Theme {
     /// `px_per_dp` is the panel density over 160, e.g. 3.0 at 480 dpi.
     pub fn light(w: u32, h: u32, px_per_dp: f32) -> Self {
-        Theme { pal: LIGHT, hero: LIGHT_HERO, m: metrics(w, h, px_per_dp), dark: false, style: UiStyle::Miuix, wallpaper: false }
+        Theme { pal: LIGHT, hero: LIGHT_HERO, m: metrics(w, h, px_per_dp), dark: false, style: UiStyle::Miuix, wallpaper: false, motion: MotionCue::default() }
     }
 
     pub fn dark(w: u32, h: u32, px_per_dp: f32) -> Self {
-        Theme { pal: DARK, hero: DARK_HERO, m: metrics(w, h, px_per_dp), dark: true, style: UiStyle::Miuix, wallpaper: false }
+        Theme { pal: DARK, hero: DARK_HERO, m: metrics(w, h, px_per_dp), dark: true, style: UiStyle::Miuix, wallpaper: false, motion: MotionCue::default() }
     }
 
     pub fn for_style(w: u32, h: u32, px_per_dp: f32, dark: bool, style: UiStyle) -> Self {
@@ -208,6 +257,9 @@ impl Theme {
         let mut t = *self;
         t.pal.card = over(self.pal.row_press, self.pal.card);
         t.hero.card = over(self.pal.row_press, self.hero.card);
+        if t.style == UiStyle::MaterialExpressive {
+            t.motion.pose = true;
+        }
         t
     }
 }
