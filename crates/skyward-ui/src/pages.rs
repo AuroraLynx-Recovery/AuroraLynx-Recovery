@@ -2603,12 +2603,13 @@ fn root_modules(cx: &Ctx, detail: bool) -> Frame {
 
 pub fn advanced(cx: &Ctx) -> Frame {
     let (t, f, l) = (cx.t, cx.f, cx.state.lang);
-    let mut c = page(cx);
+    let mut c = long_page(cx);
     let top = t.m.content_top;
     let tools = widgets::list(&mut c, t, f, top, &[
         Row::new(l.pick(texts::page::FILES)).icon(BLUE, Icon::Folder),
         Row::new(l.pick(texts::page::TERMINAL)).icon(SLATE, Icon::Terminal),
         Row::new(if l == Lang::Hans { "Recovery 密码" } else { "Recovery credential" }).icon(PURPLE, Icon::Lock),
+        Row::new(l.pick(texts::material_ui::FLASH_PARTITIONS)).icon(RED, Icon::Install),
         Row::new(if l == Lang::Hans { "提取分区" } else { "Extract partitions" }).icon(BLUE, Icon::Folder),
         Row::new(if l == Lang::Hans { "Root 模块" } else { "Root modules" }).icon(PURPLE, Icon::Layers),
         Row::new(l.pick(texts::page::RELABEL)).icon(PURPLE, Icon::Shield),
@@ -2620,6 +2621,7 @@ pub fn advanced(cx: &Ctx) -> Frame {
         Action::Open(Screen::Files),
         Action::Open(Screen::Terminal),
         Action::Open(Screen::RecoveryLock),
+        Action::Open(Screen::PartitionFlash),
         Action::Open(Screen::ExtractPartitions),
         Action::Open(Screen::RootModules),
         Action::Open(Screen::Relabel),
@@ -2627,7 +2629,7 @@ pub fn advanced(cx: &Ctx) -> Frame {
         Action::Open(Screen::Logs),
         Action::Open(Screen::Update),
     ]);
-    Frame::new(t, c, out, l.pick(texts::page::ADVANCED), top)
+    Frame::new(t, fit(c, t, tools.bottom), out, l.pick(texts::page::ADVANCED), top)
 }
 
 /// Giving the data partition's files the SELinux labels the installed

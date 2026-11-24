@@ -426,6 +426,22 @@ mod tests {
     }
 
     #[test]
+    fn advanced_partition_flashing_offers_images_without_ota_packages() {
+        let (f, i) = (fonts(), info());
+        let mut app = App::new(Screen::Advanced, W, H, PPD);
+        app.data_waiting(None);
+        tap(&mut app, &f, &i, Action::Open(Screen::PartitionFlash));
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Choose(Place::Storage))),
+            vec![Effect::ReadPlace(Place::Storage, String::new())]);
+        app.set_place(Place::Storage, String::new(),
+            Ok(vec![entry("odm.img", FileKind::File), entry("rom.zip", FileKind::File)]), LISTED);
+        assert_eq!(app.state.storage.entries.as_ref().unwrap().len(), 1);
+        assert_eq!(tap(&mut app, &f, &i, Action::ChooseEntry(0)),
+            vec![Effect::InstallFile(Place::Storage, "odm.img".into())]);
+        assert_eq!(app.screen(), Screen::Installing);
+    }
+
+    #[test]
     fn module_zip_picker_filters_images_and_returns_without_installing() {
         let (f, i) = (fonts(), info());
         let mut app = App::new(Screen::ModuleZip, W, H, PPD);
