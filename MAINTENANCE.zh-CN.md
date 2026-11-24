@@ -104,3 +104,4 @@ APatch 普通模块安装会检查当前元模块，并调用其安装器或内�
 - APatch 普通模块已接入 Recovery 离线安装。脚本使用 APatch 的 BusyBox 和私有挂载命名空间，成功后发布到 modules_update，拒绝覆盖已有待更新目录。元模块路径仍使用原生入口。Cerro arm64 overlay 构建通过，Android 启动接管尚未整体验证。
 - KernelSU 普通模块已接入离线安装，成功发布后同步已有 preinit 目录。主机测试用测试 ZIP 验证两个上游脚本执行 customize.sh 并写入指定目录，测试替代挂载和 Android 权限操作。Cerro arm64 overlay 构建通过，实际启动接管尚待验证。
 - 离线安装在执行模块脚本前检查待更新目录，发现同名项即停止。发布时继续原子拒绝覆盖。主机测试覆盖不存在的待更新项和断开的同名符号链接，Cerro arm64 overlay 构建通过。
+- APatch 和 KernelSU 普通模块完整解压失败时中止并清理临时模块目录。主机测试分别验证正常安装和注入解压失败。

@@ -418,7 +418,7 @@ install_module() {
 
     if ! grep -q '^SKIPUNZIP=1$' $MODPATH/customize.sh 2>/dev/null; then
       ui_print "- Extracting module files"
-      unzip -o "$ZIPFILE" -x 'META-INF/*' -d $MODPATH >&2
+      unzip -o "$ZIPFILE" -x 'META-INF/*' -d $MODPATH >&2 || abort "! Unable to extract module files!"
 
       # Default permissions
       set_perm_recursive $MODPATH 0 0 0755 0644
