@@ -97,6 +97,7 @@ pub struct RootModule {
     pub disabled: bool,
     pub removing: bool,
     pub pending_update: bool,
+    pub installed: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -2552,7 +2552,10 @@ fn root_modules(cx: &Ctx, detail: bool) -> Frame {
                     y = widgets::paragraph(&mut c, t, f, y, text);
                 }
                 let mut choices = Vec::new();
-                if module.removing {
+                if !module.installed {
+                    let text = if zh { "等待 Android 启用模块" } else { "Waiting for Android to activate the module" };
+                    y = widgets::paragraph(&mut c, t, f, y, text);
+                } else if module.removing {
                     choices.push((if zh { "取消移除" } else { "Cancel removal" }, ModuleChange::CancelRemoval));
                 } else {
                     choices.push(if module.disabled {
@@ -2563,9 +2566,11 @@ fn root_modules(cx: &Ctx, detail: bool) -> Frame {
                     choices.push((if zh { "计划移除" } else { "Schedule removal" }, ModuleChange::Remove));
                 }
                 let rows: Vec<_> = choices.iter().map(|(label, _)| Row::new(*label)).collect();
-                let list = widgets::list(&mut c, t, f, y + t.m.card_gap, &rows);
-                y = list.bottom;
-                out.extend(list.rows.iter().zip(choices).map(|(&rect, (_, change))| Hit { rect, action: Action::RootModuleChange(change) }));
+                if !rows.is_empty() {
+                    let list = widgets::list(&mut c, t, f, y + t.m.card_gap, &rows);
+                    y = list.bottom;
+                    out.extend(list.rows.iter().zip(choices).map(|(&rect, (_, change))| Hit { rect, action: Action::RootModuleChange(change) }));
+                }
             }
         }
         Some(Ok(modules)) => {
@@ -2574,13 +2579,15 @@ fn root_modules(cx: &Ctx, detail: bool) -> Frame {
                 y = widgets::paragraph(&mut c, t, f, y, if zh { "无已安装模块" } else { "No installed modules" });
             } else {
                 let rows: Vec<_> = modules.iter().map(|module| {
-                    let status = match (module.removing, module.disabled, zh) {
-                        (true, _, true) => "待移除",
-                        (true, _, false) => "Pending removal",
-                        (_, true, true) => "已停用",
-                        (_, true, false) => "Disabled",
-                        (_, _, true) => "已启用",
-                        (_, _, false) => "Enabled",
+                    let status = match (module.installed, module.removing, module.disabled, zh) {
+                        (false, _, _, true) => "待安装",
+                        (false, _, _, false) => "Pending installation",
+                        (_, true, _, true) => "待移除",
+                        (_, true, _, false) => "Pending removal",
+                        (_, _, true, true) => "已停用",
+                        (_, _, true, false) => "Disabled",
+                        (_, _, _, true) => "已启用",
+                        (_, _, _, false) => "Enabled",
                     };
                     let name = module.properties.iter().find(|(key, _)| key == "name").map_or(&module.id, |(_, name)| name);
                     Row::new(name).subtitle(status)

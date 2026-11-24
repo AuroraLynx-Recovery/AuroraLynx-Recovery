@@ -213,23 +213,31 @@ pub fn module_catalog() -> Result<Vec<skyward_ui::app::RootModule>> {
     use skyward_ui::app::RootModule;
     ensure!(skyward_block::mount::is_mount_point(Path::new("/data"))?, "open /data first");
     let root = Path::new("/data/adb/modules");
-    match root.symlink_metadata() {
-        Ok(metadata) => ensure!(metadata.is_dir(), "module directory is unavailable"),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error.into()),
-    }
     let mut modules = Vec::new();
-    for entry in fs::read_dir(root)? {
-        let entry = entry?;
-        let Ok(id) = entry.file_name().into_string() else { continue };
-        let Ok(module) = module_path(root, &id) else { continue };
-        modules.push(RootModule {
-            properties: module_properties(&module)?,
-            disabled: module.join("disable").symlink_metadata().is_ok(),
-            removing: module.join("remove").symlink_metadata().is_ok(),
-            pending_update: pending_update(root, &module, &id),
-            id,
-        });
+    let staging = root.with_file_name("modules_update");
+    for (directory, installed) in [(root, true), (staging.as_path(), false)] {
+        match directory.symlink_metadata() {
+            Ok(metadata) if !installed && !metadata.is_dir() => continue,
+            Ok(metadata) => ensure!(metadata.is_dir(), "module directory is unavailable"),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        }
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            let Ok(id) = entry.file_name().into_string() else { continue };
+            let Ok(module) = module_path(directory, &id) else { continue };
+            if !installed && modules.iter().any(|entry: &RootModule| entry.id == id) {
+                continue;
+            }
+            modules.push(RootModule {
+                properties: module_properties(&module)?,
+                installed,
+                disabled: installed && module.join("disable").symlink_metadata().is_ok(),
+                removing: installed && module.join("remove").symlink_metadata().is_ok(),
+                pending_update: !installed || pending_update(root, &module, &id),
+                id,
+            });
+        }
     }
     modules.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(modules)
