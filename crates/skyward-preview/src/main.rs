@@ -185,6 +185,11 @@ fn main() -> Result<()> {
                     screens.extend([
                         (Screen::Regular, "regular"), (Screen::Advanced, "advanced"), (Screen::Appearance, "appearance"),
                         (Screen::DisplayPreferences, "display"), (Screen::PartitionFlash, "partition-flash"),
+                        (Screen::About, "about"), (Screen::Files, "files"),
+                        (Screen::Install, "install"), (Screen::Wipe, "wipe"),
+                        (Screen::Mount, "mount"), (Screen::Language, "language"),
+                        (Screen::Wlan, "wlan"),
+                        (Screen::Backup, "backup"), (Screen::Reboot, "reboot"),
                     ]);
                 }
                 for (screen, name) in screens {
