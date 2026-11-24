@@ -372,6 +372,19 @@ fn install_module(manager: RootManager, archive: &Path) -> Result<()> {
             && !properties.contains("metamodule")
     }) {
         ensure!(Path::new(manager.program()).is_file(), "{manager:?} is unavailable");
+        let pending = adb.join("modules_update");
+        match pending.symlink_metadata() {
+            Ok(meta) => {
+                ensure!(meta.is_dir(), "invalid pending module directory");
+                match pending.join(id).symlink_metadata() {
+                    Ok(_) => anyhow::bail!("module {id} already has a pending update"),
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => (),
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => (),
+            Err(error) => return Err(error.into()),
+        }
         let temp = tempfile::Builder::new().prefix(".auroralynx-module-").tempdir_in(adb)?;
         let mut command = std::process::Command::new(adb.join(busybox));
         command.args(["sh", "-c", script, "auroralynx-module"])
