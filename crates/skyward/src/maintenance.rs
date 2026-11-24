@@ -160,22 +160,12 @@ pub fn modules(action: ModuleAction) -> Result<()> {
     if let ModuleAction::Install { manager, zip } = action {
         return install_module(manager, &zip);
     }
-    ensure!(root.symlink_metadata()?.is_dir(), "module directory is unavailable");
     let (id, flag, set) = match action {
         ModuleAction::Install { .. } => unreachable!("install handled before opening module directory"),
         ModuleAction::Info { id } => return module_info(root, &id),
         ModuleAction::List => {
-            let mut installed = Vec::new();
-            for entry in fs::read_dir(root)? {
-                let entry = entry?;
-                if entry.file_type()?.is_dir() && entry.path().join("module.prop").symlink_metadata().is_ok_and(|m| m.is_file()) {
-                    installed.push(entry.file_name());
-                }
-            }
-            installed.sort();
-            for id in installed {
-                let module = root.join(&id);
-                println!("{}\t{}", id.to_string_lossy(), module_state(&module));
+            for module in module_catalog_at(root)? {
+                println!("{}\t{}", module.id, module_state(&module));
             }
             return Ok(());
         }
@@ -224,20 +214,22 @@ fn module_path(root: &Path, id: &str) -> Result<PathBuf> {
     Ok(module)
 }
 
-fn module_state(module: &Path) -> &'static str {
-    if module.join("remove").symlink_metadata().is_ok() {
-        "pending removal"
-    } else if module.join("disable").symlink_metadata().is_ok() {
-        "disabled"
-    } else {
-        "enabled"
+fn module_state(module: &skyward_ui::app::RootModule) -> &'static str {
+    match (module.installed, module.removing, module.disabled) {
+        (false, _, _) => "pending installation",
+        (_, true, _) => "pending removal",
+        (_, _, true) => "disabled",
+        _ => "enabled",
     }
 }
 
 pub fn module_catalog() -> Result<Vec<skyward_ui::app::RootModule>> {
-    use skyward_ui::app::RootModule;
     ensure!(skyward_block::mount::is_mount_point(Path::new("/data"))?, "open /data first");
-    let root = Path::new("/data/adb/modules");
+    module_catalog_at(Path::new("/data/adb/modules"))
+}
+
+fn module_catalog_at(root: &Path) -> Result<Vec<skyward_ui::app::RootModule>> {
+    use skyward_ui::app::RootModule;
     let mut modules = Vec::new();
     let staging = root.with_file_name("modules_update");
     for (directory, installed) in [(root, true), (staging.as_path(), false)] {
@@ -277,11 +269,12 @@ fn pending_update(root: &Path, module: &Path, id: &str) -> bool {
 }
 
 fn module_info(root: &Path, id: &str) -> Result<()> {
-    let module = module_path(root, id)?;
+    ensure!(valid_name(id), "invalid module ID");
+    let module = module_catalog_at(root)?.into_iter().find(|module| module.id == id).context("unknown module ID")?;
     println!("id={id}");
     println!("state={}", module_state(&module));
-    println!("pending_update={}", pending_update(root, &module, id));
-    for (key, value) in module_properties(&module)? {
+    println!("pending_update={}", module.pending_update);
+    for (key, value) in module.properties {
         println!("{key}={value}");
     }
     Ok(())
