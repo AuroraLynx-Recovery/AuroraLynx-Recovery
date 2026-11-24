@@ -4,7 +4,7 @@ use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 fn valid_name(name: &str) -> bool {
@@ -359,7 +359,30 @@ fn install_module(manager: RootManager, archive: &Path) -> Result<()> {
     );
 
     use std::process::Stdio;
-    let mut command = module_installer(manager, &archive)?;
+    let adb = Path::new("/data/adb");
+    let mut staging = None;
+    let mut command = if matches!(manager, RootManager::APatch)
+        && adb.join("ap/bin/busybox").is_file()
+        && adb.join("metamodule").symlink_metadata().is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+        && !properties.contains("metamodule")
+    {
+        ensure!(Path::new(manager.program()).is_file(), "APatch is unavailable");
+        let temp = tempfile::Builder::new().prefix(".auroralynx-apatch-").tempdir_in(adb)?;
+        let mut command = std::process::Command::new(adb.join("ap/bin/busybox"));
+        command.args(["sh", "-c", include_str!("apatch_recovery_installer.sh"), "auroralynx-apatch-module"])
+            .arg(temp.path())
+            .arg(temp.path().join("scratch"))
+            .env("ASH_STANDALONE", "1")
+            .env("APATCH", "true")
+            .env("BOOTMODE", "false")
+            .env("OUTFD", "1")
+            .env("ZIPFILE", &archive);
+        isolate_installer_mounts(&mut command);
+        staging = Some(temp);
+        command
+    } else {
+        module_installer(manager, &archive)?
+    };
     let (mut reader, writer) = io::pipe()?;
     use std::os::fd::AsRawFd;
     // Only the reader is nonblocking. The installer still gets ordinary
@@ -381,6 +404,24 @@ fn install_module(manager: RootManager, archive: &Path) -> Result<()> {
     if !status.success() {
         anyhow::bail!("{manager:?} module installer exited with {status}\n{output}");
     }
+    if let Some(temp) = staging {
+        let module = module_path(&temp.path().join("modules"), id)?;
+        let installed_id = fs::read_to_string(module.join("module.prop"))?;
+        ensure!(module_zip_id(&installed_id)? == id, "installer changed module ID");
+        let pending = adb.join("modules_update");
+        for directory in [adb.join("modules"), pending.clone()] {
+            match fs::DirBuilder::new().mode(0o700).create(&directory) {
+                Ok(()) => (),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    ensure!(directory.symlink_metadata()?.is_dir(), "invalid module directory");
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        set_module_marker(&adb.join("ap/update"), true)?;
+        publish_image(&module, &pending.join(id))?;
+        File::open(&pending)?.sync_all()?;
+    }
     Ok(())
 }
 
@@ -397,7 +438,6 @@ fn module_zip_id(properties: &str) -> Result<&str> {
 }
 
 fn module_installer(manager: RootManager, archive: &Path) -> Result<std::process::Command> {
-    use std::os::unix::process::CommandExt;
     use std::process::Command;
 
     let magisk_util = Path::new("/data/adb/magisk/util_functions.sh");
@@ -417,24 +457,7 @@ fn module_installer(manager: RootManager, archive: &Path) -> Result<std::process
             }
             install_module
         "#, "auroralynx-magisk-module"]).arg(archive);
-        // Magisk's recovery functions mount and unmount partitions. Their
-        // mount changes must stay in the installer's own namespace.
-        unsafe {
-            command.pre_exec(|| {
-                if libc::unshare(libc::CLONE_NEWNS) != 0
-                    || libc::mount(
-                        std::ptr::null(),
-                        c"/".as_ptr(),
-                        std::ptr::null(),
-                        libc::MS_REC | libc::MS_PRIVATE,
-                        std::ptr::null(),
-                    ) != 0
-                {
-                    return Err(io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
+        isolate_installer_mounts(&mut command);
         return Ok(command);
     }
 
@@ -443,6 +466,26 @@ fn module_installer(manager: RootManager, archive: &Path) -> Result<std::process
     let mut command = Command::new(program);
     command.args(manager.arguments()).arg(archive);
     Ok(command)
+}
+
+fn isolate_installer_mounts(command: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+    unsafe {
+        command.pre_exec(|| {
+            if libc::unshare(libc::CLONE_NEWNS) != 0
+                || libc::mount(
+                    std::ptr::null(),
+                    c"/".as_ptr(),
+                    std::ptr::null(),
+                    libc::MS_REC | libc::MS_PRIVATE,
+                    std::ptr::null(),
+                ) != 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
 }
 
 /// Retain bounded diagnostics while draining both streams so verbose module
