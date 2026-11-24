@@ -1205,9 +1205,17 @@ pub fn authenticate_recovery(cfg: &DeviceConfig, font: &Path, mono: &Path, lock:
         }
         wait(&[inputs.fd()], 100)?;
         for event in inputs.read()? {
-            // Only touchscreen credential entry is offered on this screen.
-            let Event::Touch(touch, at) = event else { continue };
-            for effect in app.touch(touch, &fonts, at) {
+            if matches!(event, Event::Key(_, true)) && !inputs.has_panel() {
+                app.touchscreen_missing();
+            }
+            let effects = match event {
+                Event::Touch(touch, at) => app.touch(touch, &fonts, at),
+                Event::Key(key, true) => app.key(key, now),
+                Event::Key(key, false) => app.key_up(key, now),
+            };
+            // The locked loop only handles credential effects. Navigation,
+            // screenshots and service requests remain unavailable here.
+            for effect in effects {
                 if effect == Effect::UseRecoveryCode {
                     if app.state.recovery_prompt == RecoveryPrompt::OfferCode && lock.has_recovery_code() {
                         app.state.recovery_prompt = RecoveryPrompt::Code;
