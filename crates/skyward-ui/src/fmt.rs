@@ -787,7 +787,8 @@ pub fn partition_role(l: Lang, partition: &FlashTarget) -> &'static str {
     use texts::image::role;
     l.pick(match (partition.place, partition.name.as_str()) {
         (FlashPlace::Logical, _) => role::LOGICAL,
-        (FlashPlace::Single, _) => role::WHOLE_SUPER,
+        (FlashPlace::Single, "super") => role::WHOLE_SUPER,
+        (FlashPlace::Single, _) => role::PARTITION,
         (FlashPlace::Slotted, "boot") => role::BOOT,
         (FlashPlace::Slotted, "init_boot") => role::INIT_BOOT,
         (FlashPlace::Slotted, "recovery") => role::RECOVERY,

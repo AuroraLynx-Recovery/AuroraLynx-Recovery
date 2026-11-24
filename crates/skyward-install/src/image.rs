@@ -418,7 +418,7 @@ pub fn device(dir: &Path, name: &str, slot: Slot) -> PathBuf {
 pub enum Place {
     /// One of a pair, a partition in each slot.
     Slotted,
-    /// A partition the phone has once: super.
+    /// A physical partition without a slot suffix.
     Single,
     /// A logical partition in super, of the slot the phone runs from.
     Logical,
@@ -491,6 +491,18 @@ pub fn targets(kind: ImageKind, named: Option<&str>, dir: &Path, logical: &[Stri
         }
     }
     Ok(found)
+}
+
+/// Offer an exact filename match for a device-configured physical partition.
+pub fn configured_unslotted(dir: &Path, named: &str, allowed: &[String]) -> Result<Option<Target>> {
+    if named.is_empty() || !named.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        || matches!(named, "super" | "userdata" | "metadata" | "misc")
+        || !allowed.iter().any(|entry| entry == named)
+        || !dir.join(named).try_exists()?
+    {
+        return Ok(None);
+    }
+    Ok(Some(Target { name: named.to_string(), place: Place::Single }))
 }
 
 /// Check that the image of a whole super in `image` is one for a super
@@ -953,6 +965,17 @@ mod tests {
         let mut seen = Vec::new();
         flash(&mut Cursor::new(image), image.len() as u64, devices, &mut |done, total| seen.push((done, total)))?;
         Ok(seen)
+    }
+
+    #[test]
+    fn unslotted_image_requires_an_exact_configured_partition() {
+        let dir = phone(&["persist", "misc", "super", "userdata"]);
+        let allowed = vec!["persist".into(), "misc".into(), "super".into(), "userdata".into(), "not_present".into()];
+        let target = configured_unslotted(dir.path(), "persist", &allowed).unwrap().unwrap();
+        assert_eq!((target.name.as_str(), target.place), ("persist", Place::Single));
+        for name in ["misc", "super", "userdata", "not_present", "../persist", "modemst1"] {
+            assert!(configured_unslotted(dir.path(), name, &allowed).unwrap().is_none(), "{name}");
+        }
     }
 
     #[test]

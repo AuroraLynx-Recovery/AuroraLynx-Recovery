@@ -804,7 +804,16 @@ fn flash_image(ctx: &mut Context, image: &Image, file_name: Option<&str>) -> Res
         let _ = kmsg(&format!("install: super lists no logical partitions: {e:#}"));
         Vec::new()
     });
-    let all = image::targets(image.kind, file_name.map(image::named), dir, &logical)?;
+    let named = file_name.map(image::named);
+    let mut all = image::targets(image.kind, named, dir, &logical)?;
+    if matches!(image.kind, ImageKind::Filesystem(_) | ImageKind::Other)
+        && let Some(name) = named
+        && !all.iter().any(|target| target.name == name)
+        && let Ok(cfg) = skyward_config::DeviceConfig::load(Path::new("/").join(skyward_config::ramdisk::CONFIG))
+        && let Some(target) = image::configured_unslotted(dir, name, &cfg.backup.efs)?
+    {
+        all.insert(0, target);
+    }
     let state = skyward_vab::snapshot_state()?;
     let partitions: Vec<Target> = all.iter().filter(|t| state == SnapshotState::None || t.place == Place::Slotted).cloned().collect();
     if partitions.is_empty() {
@@ -836,9 +845,13 @@ fn flash_image(ctx: &mut Context, image: &Image, file_name: Option<&str>) -> Res
         Place::Single => {
             ensure!(slots.is_empty(), "{partition} is in no slot, and was sent to {slots:?}");
             let device = dir.join(&partition);
-            image::check_super(&mut image::Expanded::new(&mut file, layout), skyward_block::size_bytes(&device)?)?;
-            detach_once(ctx)?;
-            write_image(ctx, &mut file, layout, &[device], false)?;
+            if image.kind == ImageKind::Super {
+                image::check_super(&mut image::Expanded::new(&mut file, layout), skyward_block::size_bytes(&device)?)?;
+                detach_once(ctx)?;
+                write_image(ctx, &mut file, layout, &[device], false)?;
+            } else {
+                write_unmounted(ctx, &mut file, layout, &[device])?;
+            }
         }
         Place::Logical => {
             ensure!(slots == [slot], "{partition} is a logical partition of slot {slot:?}, and was sent to {slots:?}");
