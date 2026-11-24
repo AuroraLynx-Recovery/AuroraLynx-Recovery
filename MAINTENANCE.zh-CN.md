@@ -100,3 +100,4 @@ APatch 普通模块安装会检查当前元模块，并调用其安装器或内�
 - 模块标记变更后更新已有 KernelSU preinit 目录，不调用 `ksud`，也不因 Recovery 内核不支持 preinit 而删除这些目录。主机测试覆盖禁用后撤下副本、取消禁用后写回、暂存副本被已安装移除标记抑制、无现成目录时不新建，以及符号链接不被跟随。
 - 已将公开仓库的 KernelSU preinit 修复（0c10341）纳入 AuroraAOSP 的 0129 重放补丁。从固定上游基线重放后，核对源码与公开提交一致，六项主机测试通过。
 - 含 0129 的 Cerro arm64 overlay 构建退出码为 0，产物中的 skyward 入口指向 AArch64 recovery 可执行文件。
+- ZIP 预检对 KernelSU 和 APatch 拒绝单字符 ID，与其当前原生安装器规则一致。Magisk 保留原有预检规则。Cerro arm64 overlay 构建通过。

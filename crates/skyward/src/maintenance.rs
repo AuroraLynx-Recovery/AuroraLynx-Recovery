@@ -352,7 +352,11 @@ fn install_module(manager: RootManager, archive: &Path) -> Result<()> {
     let mut properties = String::new();
     prop.take(65537).read_to_string(&mut properties)?;
     ensure!(properties.len() <= 65536, "module metadata exceeds 64 KiB");
-    module_zip_id(&properties)?;
+    let id = module_zip_id(&properties)?;
+    ensure!(
+        matches!(manager, RootManager::Magisk) || id.len() >= 2,
+        "{manager:?} module IDs must contain at least two characters"
+    );
 
     use std::process::Stdio;
     let mut command = module_installer(manager, &archive)?;
