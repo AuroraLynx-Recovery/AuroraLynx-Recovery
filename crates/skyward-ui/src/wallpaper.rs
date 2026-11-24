@@ -52,10 +52,12 @@ impl Wallpaper {
         let area = image::imageops::crop_imm(&self.0, x, y, w, h).to_image();
         let mut pixels = area.pixels().step_by((u64::from(w) * u64::from(h) / 12544).max(1) as usize)
             .map(|p| Argb::from_rgb(p[0], p[1], p[2])).collect::<Vec<_>>();
-        // The quantizer uses the order of its input when initializing clusters.
-        // Sort so two equally populated colors resolve the same way each time.
+        // Wu fills a histogram, then Celebi starts K-means from those
+        // clusters in first-seen order. Sort so the same crop always starts
+        // the same way. 128 clusters is what Android's wallpaper scorer asks
+        // for; fewer merges colours Score would otherwise keep apart.
         pixels.sort_unstable_by_key(|color| color.0);
-        let colors = QuantizerCelebi::new().quantize(&pixels, 32).color_to_count;
+        let colors = QuantizerCelebi::new().quantize(&pixels, 128).color_to_count;
         let fallback = colors.iter().max_by_key(|&(color, count)| (*count, color.0))
             .map_or(Argb(0xff7154a5), |(&color, _)| color);
         Score::score(&colors).desired_count(1).fallback_color_argb(fallback).call()[0].0 & 0xffffff

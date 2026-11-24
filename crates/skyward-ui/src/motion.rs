@@ -32,6 +32,25 @@ impl Spring {
 
 /// How far 0 → 1 a spring of `period` released from rest has come after
 /// `ms` milliseconds.
+/// Where a spring of Compose stiffness 400 sits between `from` and `to`
+/// after `ms`. `damping` is the ratio: 1 is critical, 0.5 is medium bouncy,
+/// the same pair SukiSU uses for cards, switches and slider handles.
+pub fn compose(ms: u64, from: f32, to: f32, damping: f32) -> (f32, bool) {
+    let omega = 400.0_f32.sqrt();
+    let t = ms as f32 / 1000.0;
+    let u0 = from - to;
+    let (u, velocity) = if damping >= 0.999 {
+        (u0 * (1.0 + omega * t) * (-omega * t).exp(), -u0 * omega * omega * t * (-omega * t).exp())
+    } else {
+        let z = damping.clamp(0.05, 0.999);
+        let wd = omega * (1.0 - z * z).sqrt();
+        let decay = (-z * omega * t).exp();
+        (decay * (u0 * (wd * t).cos() + (z * omega * u0) / wd * (wd * t).sin()), -decay * u0 * omega * omega / wd * (wd * t).sin())
+    };
+    let settled = (u.abs() < 0.004 * (1.0 + (to - from).abs()) && velocity.abs() < 0.04 * (1.0 + (to - from).abs())) || t > 1.4;
+    (to + u, settled)
+}
+
 pub fn settle(ms: u64, period: f32) -> f32 {
     let (x, done) = Spring::new(0, 1.0, 0.0, period).at(ms);
     if done && x < 0.002 {
@@ -84,6 +103,22 @@ mod tests {
         assert!(!s.at(2).1, "it has only just left");
         assert!(s.at(1500).1);
         assert!(s.at(1500).0 >= 0.0, "it never crosses back");
+    }
+
+    #[test]
+    fn a_medium_bouncy_spring_overshoots_then_settles() {
+        assert!(!compose(120, 0.0, 1.0, 0.5).1, "crossing the target at speed does not finish the spring");
+        let mut peak = 0.0_f32;
+        for ms in (0..400).step_by(8) {
+            peak = peak.max(compose(ms, 0.0, 1.0, 0.5).0);
+        }
+        assert!(peak > 1.08, "a card press springs past its target, {peak}");
+        let (end, done) = compose(1400, 0.0, 1.0, 0.5);
+        assert!(done && (end - 1.0).abs() < 0.01, "{end}");
+        let (handle, _) = compose(0, 4.0, 2.0, 1.0);
+        assert!((handle - 4.0).abs() < 0.01);
+        let (narrow, settled) = compose(800, 4.0, 2.0, 1.0);
+        assert!(settled && (narrow - 2.0).abs() < 0.05, "{narrow}");
     }
 
     #[test]

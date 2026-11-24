@@ -112,16 +112,28 @@ impl App {
                 // the finger lands on it, if the finger stays.
                 let row = hit
                     .filter(|&(a, r)| self.frame.as_ref().is_some_and(|fr| fr.hits.contains(&Hit { rect: r, action: a })))
-                    .filter(|&(a, r)| row_wide(&t, r) && !matches!(a, Action::Open(Screen::Search) | Action::Confirm(_) | Action::TypeInto(_)))
+                    .filter(|&(a, r)| {
+                        let own_motion = matches!(
+                            a,
+                            Action::Open(Screen::Search)
+                                | Action::Confirm(_)
+                                | Action::TypeInto(_)
+                                | Action::Slider(_)
+                                | Action::Pattern
+                                | Action::Type(_)
+                                | Action::PickSecurity(_)
+                        );
+                        !own_motion && (row_wide(&t, r) || self.expressive_active())
+                    })
                     .map(|(_, r)| r);
                 self.drag = match hit {
                     Some((Action::Slider(which), track)) => {
                         self.set_slider(&t, which, track, x);
                         Drag::Slider(which, track)
                     }
-                    Some((Action::Confirm(which), track)) if self.on_knob(track, x) => {
-                        let knob_x = track.x + (track.w - track.h) * self.state.confirm;
-                        Drag::Confirm { which, track, grab: x - knob_x }
+                    Some((Action::Confirm(which), track)) if self.on_knob(&t, track, x) => {
+                        let (center, _, _, _) = widgets::confirm_handle(&t, track, self.state.confirm);
+                        Drag::Confirm { which, track, grab: x - center }
                     }
                     Some((Action::Pattern, _)) => {
                         self.state.pattern.clear();
@@ -130,7 +142,8 @@ impl App {
                     }
                     _ => {
                         if let Some(rect) = row {
-                            self.row_press = Some(RowPress { rect, rise: now + ROW_PRESS_DELAY_MS, fall: None });
+                            let scale_from = if self.expressive_active() { now } else { now + ROW_PRESS_DELAY_MS };
+                            self.row_press = Some(RowPress { rect, rise: now + ROW_PRESS_DELAY_MS, fall: None, scale_from, scale_fall: None });
                             self.row_art = None;
                         }
                         Drag::Press { x, y, action, edge: at_edge, at: now }
@@ -141,6 +154,12 @@ impl App {
                 Drag::Press { x: x0, y: y0, action, edge: at_edge, at } => {
                     self.tracker.add(now, y);
                     let (dx, dy) = (x - x0, y - y0);
+                    let edge_swipe = at_edge.is_some() && dx.abs() > slop && dx.abs() > dy.abs();
+                    if matches!(action, Some(Action::VncPoint)) && !edge_swipe && (dx.abs() > slop || dy.abs() > slop) {
+                        self.vnc_pointer(x, y, 1);
+                        self.drag = Drag::Remote { x, y };
+                        self.let_row_go(now);
+                    } else {
                     self.drag = match at_edge {
                         Some(from_left) if dx.abs() > slop && dx.abs() > dy.abs() => {
                             self.dirty = true;
@@ -165,6 +184,11 @@ impl App {
                     if !matches!(self.drag, Drag::Press { .. }) {
                         self.let_row_go(now);
                     }
+                    }
+                }
+                Drag::Remote { .. } => {
+                    self.vnc_pointer(x, y, 1);
+                    self.drag = Drag::Remote { x, y };
                 }
                 Drag::Scroll { last } => {
                     self.tracker.add(now, y);
@@ -187,8 +211,8 @@ impl App {
                     self.drag = Drag::Slider(which, track);
                 }
                 Drag::Confirm { which, track, grab } => {
-                    let travel = (track.w - track.h).max(1.0);
-                    self.state.confirm = ((x - grab - track.x) / travel).clamp(0.0, 1.0);
+                    let (_, _, origin, travel) = widgets::confirm_handle(&t, track, 0.0);
+                    self.state.confirm = ((x - grab - origin) / travel).clamp(0.0, 1.0);
                     self.repaint_confirm(&t, f, which, track);
                     self.drag = Drag::Confirm { which, track, grab };
                 }
@@ -205,6 +229,8 @@ impl App {
                 Drag::Idle => {}
             },
             Touch::Up => match std::mem::replace(&mut self.drag, Drag::Idle) {
+                Drag::Remote { x, y } => self.vnc_pointer(x, y, 0),
+                Drag::Press { x, y, action: Some(Action::VncPoint), .. } => self.vnc_click(x, y),
                 Drag::Press { action: Some(a), .. } => {
                     if let Some(p) = &mut self.row_press {
                         p.lift(now);
@@ -291,6 +317,21 @@ impl App {
         fx
     }
 
+    pub(super) fn vnc_pointer(&self, x: f32, y: f32, buttons: u8) {
+        let Some(link) = &self.vnc else { return };
+        let Some(picture) = link.picture() else { return };
+        let theme = self.theme();
+        let area = crate::vncview::slot(&theme, self.state.vnc_field == 2);
+        if let Some((px, py)) = crate::vncview::map_point(area, picture.w, picture.h, x, y) {
+            link.pointer(px, py, buttons);
+        }
+    }
+
+    fn vnc_click(&self, x: f32, y: f32) {
+        self.vnc_pointer(x, y, 1);
+        self.vnc_pointer(x, y, 0);
+    }
+
     /// The button a finger holds down, which shows held at once: `<`, the
     /// search page's round button, or the home page's search bar.
     pub(super) fn pressing(&self) -> Option<Action> {
@@ -310,7 +351,7 @@ impl App {
             self.row_press = None;
             self.row_art = None;
         } else if p.fall.is_none() {
-            self.row_press = Some(RowPress { fall: Some(now), ..p });
+            self.row_press = Some(RowPress { fall: Some(now), scale_fall: Some(now), ..p });
         }
         self.dirty = true;
     }
@@ -485,9 +526,9 @@ impl App {
         self.dirty = true;
     }
 
-    fn on_knob(&self, track: Rect, x: f32) -> bool {
-        let knob_x = track.x + (track.w - track.h) * self.state.confirm;
-        x >= knob_x && x <= knob_x + track.h
+    fn on_knob(&self, t: &Theme, track: Rect, x: f32) -> bool {
+        let (center, reach, _, _) = widgets::confirm_handle(t, track, self.state.confirm);
+        (x - center).abs() <= reach
     }
 
     fn repaint_confirm(&mut self, t: &Theme, f: &Fonts, which: Confirm, track: Rect) {

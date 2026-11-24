@@ -161,6 +161,7 @@ impl App {
                 self.state.adding = None;
                 self.state.password.clear();
             }
+            Screen::Vnc => self.vnc = None,
             Screen::FileJob => {
                 if self.state.job.as_ref().is_some_and(|j| j.outcome.is_none()) {
                     self.say(l.pick(WAIT_OR_STOP), now);
@@ -317,6 +318,10 @@ impl App {
                 } else {
                     Vec::new()
                 }
+            }
+            Screen::Agent => {
+                self.state.layer = Layer::Letters;
+                Vec::new()
             }
             Screen::RecoveryLock => {
                 self.state.recovery_lock = RecoveryLock::Loading;
