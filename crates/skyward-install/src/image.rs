@@ -494,8 +494,9 @@ pub fn targets(kind: ImageKind, named: Option<&str>, dir: &Path, logical: &[Stri
 }
 
 /// Offer an exact filename match for a device-configured physical partition.
-pub fn configured_unslotted(dir: &Path, named: &str, allowed: &[String]) -> Result<Option<Target>> {
-    if named.is_empty() || !named.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+pub fn configured_unslotted(dir: &Path, file_name: &str, allowed: &[String]) -> Result<Option<Target>> {
+    let Some((named, extension)) = file_name.rsplit_once('.') else { return Ok(None) };
+    if !extension.eq_ignore_ascii_case("img") || named.is_empty() || !named.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
         || matches!(named, "super" | "userdata" | "metadata" | "misc")
         || !allowed.iter().any(|entry| entry == named)
         || !dir.join(named).try_exists()?
@@ -971,9 +972,9 @@ mod tests {
     fn unslotted_image_requires_an_exact_configured_partition() {
         let dir = phone(&["persist", "misc", "super", "userdata"]);
         let allowed = vec!["persist".into(), "misc".into(), "super".into(), "userdata".into(), "not_present".into()];
-        let target = configured_unslotted(dir.path(), "persist", &allowed).unwrap().unwrap();
+        let target = configured_unslotted(dir.path(), "persist.IMG", &allowed).unwrap().unwrap();
         assert_eq!((target.name.as_str(), target.place), ("persist", Place::Single));
-        for name in ["misc", "super", "userdata", "not_present", "../persist", "modemst1"] {
+        for name in ["misc.img", "super.img", "userdata.img", "not_present.img", "../persist.img", "modemst1.img", "persist_a.img", "persist_b.img", "persist.zip", "persist"] {
             assert!(configured_unslotted(dir.path(), name, &allowed).unwrap().is_none(), "{name}");
         }
     }

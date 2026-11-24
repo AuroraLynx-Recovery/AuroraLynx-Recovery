@@ -807,10 +807,10 @@ fn flash_image(ctx: &mut Context, image: &Image, file_name: Option<&str>) -> Res
     let named = file_name.map(image::named);
     let mut all = image::targets(image.kind, named, dir, &logical)?;
     if matches!(image.kind, ImageKind::Filesystem(_) | ImageKind::Other)
-        && let Some(name) = named
-        && !all.iter().any(|target| target.name == name)
+        && let Some(file_name) = file_name
         && let Ok(cfg) = skyward_config::DeviceConfig::load(Path::new("/").join(skyward_config::ramdisk::CONFIG))
-        && let Some(target) = image::configured_unslotted(dir, name, &cfg.backup.efs)?
+        && let Some(target) = image::configured_unslotted(dir, file_name, &cfg.backup.efs)?
+        && !all.iter().any(|candidate| candidate.name == target.name)
     {
         all.insert(0, target);
     }
