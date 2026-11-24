@@ -181,6 +181,16 @@ pub fn modules(action: ModuleAction) -> Result<()> {
         if root.with_file_name("apd").is_file() && ap.symlink_metadata().is_ok_and(|metadata| metadata.is_dir()) {
             // APatch's native uninstall and undo operations also notify its
             // boot-time module updater through /data/adb/ap/update.
+            if !set {
+                let staging = root.with_file_name("modules_update");
+                let pending = staging.join(&id);
+                if staging.symlink_metadata().is_ok_and(|metadata| metadata.is_dir())
+                    && pending.symlink_metadata().is_ok_and(|metadata| metadata.is_dir())
+                {
+                    // APatch can activate the pending tree directly at boot.
+                    set_module_marker(&pending.join("remove"), false)?;
+                }
+            }
             set_module_marker(&ap.join("update"), true)?;
         }
     }

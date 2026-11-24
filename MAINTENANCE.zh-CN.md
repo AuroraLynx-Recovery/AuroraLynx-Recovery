@@ -96,3 +96,4 @@ APatch 普通模块安装会检查当前元模块，并调用其安装器或内�
 - 单个模块的元数据读失败时，图形界面与 CLI 仍列出模块及其启停状态，在详情中报告错误。主机用一个无效 UTF-8 模块和一个正常模块验证隔离行为。Cerro arm64 构建通过。
 - Magisk 模块安装优先调用已安装版本的 util_functions.sh 中的 install_module，明确使用 Recovery 模式，并在独立、私有传播的挂载命名空间运行。主机替身测试验证带空格的 ZIP 路径、Recovery 模式和输出参数，Cerro arm64 构建通过。 [Magisk 官方模块安装脚本](https://github.com/topjohnwu/Magisk/blob/master/scripts/module_installer.sh)
 - 模块 ZIP 在调用安装器前要求单一、无歧义的模块 ID。主机测试覆盖 CRLF、重复 ID、首字符、非法路径字符和空格。Cerro arm64 overlay 构建通过。
+- APatch 取消移除时同时清理待更新版本的 remove 标记，避免启动时激活待更新目录后仍执行移除。主机验证已安装和待更新目录、重复取消及重新计划移除，Cerro arm64 overlay 构建通过。
