@@ -42,10 +42,11 @@ pub(super) fn info() -> DeviceInfo {
 /// controls, on its pinned strip, or a row of its long list.
 pub(super) fn spot(app: &mut App, f: &Fonts, i: &DeviceInfo, action: Action) -> (f32, f32) {
     let (t, scroll) = (app.theme(), app.top().1);
+    let screen = app.screen();
     let fr = app.frame(f, i);
     if let Some(h) = fr.hits.iter().find(|h| h.action == action) {
         let (x, y) = h.rect.centre();
-        return (x, y - scroll);
+        return bring_above_dock(app, f, i, x, y);
     }
     if let Some(p) = &fr.pinned
         && let Some(h) = p.hits.iter().find(|h| h.action == action)
@@ -59,11 +60,44 @@ pub(super) fn spot(app: &mut App, f: &Fonts, i: &DeviceInfo, action: Action) -> 
         let (x, y) = h.rect.centre();
         return (x, y + H as f32 - d.canvas.h as f32);
     }
-    let rows = fr.rows.as_ref().expect("control on the page");
-    let answer = rows.action.expect("control on the page");
+    let rows = fr.rows.as_ref().unwrap_or_else(|| panic!("{action:?} is not on {screen:?}"));
+    let answer = rows.action.expect("the rows are not controls");
     let k = (0..rows.count()).find(|&k| answer(k) == action).expect("control on the page");
     let (x, y) = rows.rect(k, fr.canvas.w as f32).centre();
-    (x, y - scroll)
+    bring_above_dock(app, f, i, x, y)
+}
+
+/// Where the control at (`x`, `page_y`) shows, scrolling the page up until
+/// it is clear of the dock when the dock would otherwise float over it.
+fn bring_above_dock(app: &mut App, f: &Fonts, i: &DeviceInfo, x: f32, page_y: f32) -> (f32, f32) {
+    let h = app.h as f32;
+    let dock = app.frame(f, i).dock.as_ref().map(|d| d.canvas.h as f32);
+    let dock_top = h - dock.unwrap_or(0.0);
+    let scroll = app.top().1;
+    let mut visible = page_y - scroll;
+    let limit = dock_top - app.theme().m.margin;
+    if visible > limit {
+        let target = (page_y - limit).clamp(0.0, app.max_scroll());
+        if (target - scroll).abs() > 0.5 {
+            app.top_mut().1 = target;
+            app.refresh();
+            app.frame(f, i);
+            visible = page_y - target;
+        }
+    }
+    (x, visible)
+}
+
+/// Where the control doing `action` lies on the page, scrolled or not.
+pub(super) fn page_spot(app: &mut App, f: &Fonts, i: &DeviceInfo, action: Action) -> (f32, f32) {
+    let fr = app.frame(f, i);
+    if let Some(h) = fr.hits.iter().find(|h| h.action == action) {
+        return h.rect.centre();
+    }
+    let rows = fr.rows.as_ref().expect("control on the page");
+    let answer = rows.action.expect("the rows are not controls");
+    let k = (0..rows.count()).find(|&k| answer(k) == action).expect("control on the page");
+    rows.rect(k, fr.canvas.w as f32).centre()
 }
 
 pub(super) fn tap(app: &mut App, f: &Fonts, i: &DeviceInfo, action: Action) -> Vec<Effect> {
@@ -94,11 +128,71 @@ pub(super) fn tap_button(app: &mut App, f: &Fonts, i: &DeviceInfo, now: u64) -> 
     fx
 }
 
-/// `screen` opened from the home page, so there is a page to go back
-/// to.
+/// The primary destination that holds `screen` in the Material page map,
+/// which both styles now share.
+fn destination_tab(screen: Screen) -> Screen {
+    match screen {
+        Screen::Home | Screen::Search | Screen::Systems => Screen::Home,
+        Screen::Regular
+        | Screen::Install
+        | Screen::Backup
+        | Screen::Restore
+        | Screen::Decrypt
+        | Screen::Reboot
+        | Screen::Wipe
+        | Screen::Update
+        | Screen::Wlan
+        | Screen::Mobile
+        | Screen::SkywardUpdate => Screen::Regular,
+        Screen::Advanced
+        | Screen::Mount
+        | Screen::Files
+        | Screen::Terminal
+        | Screen::Filesystems
+        | Screen::Relabel
+        | Screen::Logs
+        | Screen::ExtractPartitions
+        | Screen::RootModules
+        | Screen::RootModule
+        | Screen::Slot
+        | Screen::Agent
+        | Screen::ZeroTier
+        | Screen::Vnc => Screen::Advanced,
+        Screen::Settings
+        | Screen::Appearance
+        | Screen::DisplayPreferences
+        | Screen::LocalePreferences
+        | Screen::About
+        | Screen::Specs
+        | Screen::License
+        | Screen::FontLicense
+        | Screen::RecoveryLock
+        | Screen::ScreenOff
+        | Screen::Language
+        | Screen::TimeZone
+        | Screen::TimeZones(_)
+        | Screen::ManualColor => Screen::Settings,
+        _ => Screen::Home,
+    }
+}
+
+/// `screen` opened from its tab, so there is a page to go back to.
 pub(super) fn opened(screen: Screen, f: &Fonts, i: &DeviceInfo) -> App {
     let mut app = App::new(Screen::Home, W, H, PPD);
-    tap(&mut app, f, i, Action::Open(screen));
+    if screen == Screen::Home {
+        return app;
+    }
+    if screen == Screen::Search {
+        tap_button(&mut app, f, i, 0);
+        return app;
+    }
+    let tab = destination_tab(screen);
+    if tab != Screen::Home {
+        tap(&mut app, f, i, Action::SelectTab(tab));
+    }
+    if screen != tab {
+        tap(&mut app, f, i, Action::Open(screen));
+    }
     app
 }
 
@@ -218,7 +312,7 @@ pub(super) fn light_on(app: &mut App, f: &Fonts, i: &DeviceInfo, stop: Stop) {
 /// Drag the knob of a swipe-to-confirm track all the way across.
 pub(super) fn swipe(app: &mut App, f: &Fonts, i: &DeviceInfo, which: Confirm) -> Vec<Effect> {
     let track = app.frame(f, i).hits.iter().find(|h| h.action == Action::Confirm(which)).expect("the track is on the page").rect;
-    let y = track.centre().1 - app.top().1;
+    let y = bring_above_dock(app, f, i, track.x, track.centre().1).1;
     let mut fx = app.touch(Touch::Down(track.x + track.h / 2.0, y), f, 0);
     fx.extend(app.touch(Touch::Move(track.x + track.w / 2.0, y), f, 0));
     fx.extend(app.touch(Touch::Move(track.x + track.w, y), f, 0));

@@ -294,9 +294,7 @@ impl App {
     pub fn set_place(&mut self, place: Place, folder: String, files: Result<Vec<FileRow>, String>, listed: i64) {
         let parent = self.stack.iter().rev().nth(1).map(|page| page.0);
         let file_extension = match parent {
-            Some(Screen::PartitionFlash) => Some("img"),
             Some(Screen::ModuleZip) => Some("zip"),
-            Some(Screen::Install) if self.stack.first().is_some_and(|p| p.0 == Screen::Regular) => Some("zip"),
             _ => None,
         };
         let files = files.map(|entries| entries.into_iter().filter(|entry| {
@@ -426,16 +424,16 @@ mod tests {
     }
 
     #[test]
-    fn advanced_partition_flashing_offers_images_without_ota_packages() {
+    fn unified_install_picker_offers_images_and_ota_packages() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Advanced, W, H, PPD);
+        let mut app = App::new(Screen::Regular, W, H, PPD);
         app.data_waiting(None);
-        tap(&mut app, &f, &i, Action::Open(Screen::PartitionFlash));
+        tap(&mut app, &f, &i, Action::Open(Screen::Install));
         assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Choose(Place::Storage))),
             vec![Effect::ReadPlace(Place::Storage, String::new())]);
         app.set_place(Place::Storage, String::new(),
             Ok(vec![entry("odm.img", FileKind::File), entry("rom.zip", FileKind::File)]), LISTED);
-        assert_eq!(app.state.storage.entries.as_ref().unwrap().len(), 1);
+        assert_eq!(app.state.storage.entries.as_ref().unwrap().len(), 2);
         assert_eq!(tap(&mut app, &f, &i, Action::ChooseEntry(0)),
             vec![Effect::InstallFile(Place::Storage, "odm.img".into())]);
         assert_eq!(app.screen(), Screen::Installing);
@@ -498,7 +496,7 @@ mod tests {
         ];
         app.set_place(Place::Storage, String::new(), Ok(listed), LISTED);
         let shown: Vec<&str> = app.state.storage.entries.as_ref().expect("listed").iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(shown, ["Download", "OTA.ZIP", "boot.img"], "folders and what can be installed, hidden ones left out");
+        assert_eq!(shown, ["Download", "OTA.ZIP", "boot.img"], "folders, packages and images share the same picker");
         assert_eq!(tap(&mut app, &f, &i, Action::ChooseEntry(0)), vec![Effect::ReadPlace(Place::Storage, "Download".into())]);
         app.set_place(Place::Storage, "Download".into(), Ok(vec![entry("ota.zip", FileKind::File)]), LISTED);
         assert_eq!(tap(&mut app, &f, &i, Action::ChooseEntry(0)), vec![Effect::InstallFile(Place::Storage, "Download/ota.zip".into())]);
@@ -526,10 +524,10 @@ mod tests {
         assert_eq!(app.set_usb_drive(Some(UsbDrive::Shown)), vec![Effect::ReadPlace(Place::UsbDrive, String::new())], "read once shown");
         app.set_place(Place::UsbDrive, String::new(), Ok(vec![entry("ROMs", folder(2))]), LISTED);
         assert_eq!(tap(&mut app, &f, &i, Action::ChooseEntry(0)), vec![Effect::ReadPlace(Place::UsbDrive, "ROMs".into())]);
-        app.set_place(Place::UsbDrive, "ROMs".into(), Ok(vec![entry("boot.img", FileKind::File)]), LISTED);
-        assert_eq!(tap(&mut app, &f, &i, Action::ChooseEntry(0)), vec![Effect::InstallFile(Place::UsbDrive, "ROMs/boot.img".into())]);
+        app.set_place(Place::UsbDrive, "ROMs".into(), Ok(vec![entry("ota.zip", FileKind::File)]), LISTED);
+        assert_eq!(tap(&mut app, &f, &i, Action::ChooseEntry(0)), vec![Effect::InstallFile(Place::UsbDrive, "ROMs/ota.zip".into())]);
         assert_eq!(app.state.source, Source::File(Place::UsbDrive));
-        app.install(Event::Finished(Outcome::Failed(Failure::Unreadable("read /mnt/usb/ROMs/boot.img: Input/output error".into()))), 0);
+        app.install(Event::Finished(Outcome::Failed(Failure::Unreadable("read /mnt/usb/ROMs/ota.zip: Input/output error".into()))), 0);
         tap_at(&mut app, &f, &i, Action::Back, 1000);
         assert_eq!(app.screen(), page, "back to choose another");
         assert!(app.set_usb_drive(None).is_empty());

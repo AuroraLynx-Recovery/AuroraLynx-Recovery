@@ -6,6 +6,30 @@ use crate::icons::{self, Icon};
 
 pub(super) const TABS: [Screen; 4] = [Screen::Home, Screen::Regular, Screen::Advanced, Screen::Settings];
 
+/// The dock stands under every page. Pages that already hold a strip at
+/// the bottom (the file manager's copy bar, a folder picker) keep that
+/// strip, stacked above the destinations.
+pub(super) fn dockable(screen: Screen) -> bool {
+    // Fastboot is the pre-recovery screen; its keys wrap its own choices.
+    !matches!(screen, Screen::Fastboot)
+}
+
+/// Lay a page's own bottom strip over the destination dock, so both show.
+pub(super) fn stack_docks(page: Dock, destinations: Dock) -> Dock {
+    let w = page.canvas.w.max(destinations.canvas.w);
+    let h = page.canvas.h + destinations.canvas.h;
+    let mut canvas = Canvas::new(w, h);
+    canvas.lay(&page.canvas, 0, 0, 1.0);
+    canvas.lay(&destinations.canvas, 0, page.canvas.h as i32, 1.0);
+    let mut hits = page.hits;
+    let lift = page.canvas.h as f32;
+    hits.extend(destinations.hits.into_iter().map(|hit| Hit {
+        rect: Rect { y: hit.rect.y + lift, ..hit.rect },
+        action: hit.action,
+    }));
+    Dock { canvas, hits }
+}
+
 pub(crate) fn title(screen: Screen, lang: Lang) -> &'static str {
     lang.pick(match screen {
         Screen::Home => texts::page::DEVICE_STATUS,
@@ -44,6 +68,9 @@ impl TabMotion {
 }
 
 pub(super) fn dock(t: &Theme, f: &Fonts, lang: Lang, selected: Screen, poses: Option<[f32; 4]>) -> Dock {
+    if t.style == UiStyle::Miuix {
+        return miuix_dock(t, f, lang, selected, poses);
+    }
     let m = t.m;
     let w = m.w as f32;
     let h = m.dp(88.0);
@@ -96,44 +123,104 @@ pub(super) fn dock(t: &Theme, f: &Fonts, lang: Lang, selected: Screen, poses: Op
     Dock { canvas: c, hits }
 }
 
+/// The dock the Miuix style shows, after SukiSU Ultra: a floating capsule
+/// 64 dp tall with 4 dp inside, every destination showing its icon and
+/// label, and a 15% accent pill sliding under the chosen one.
+fn miuix_dock(t: &Theme, f: &Fonts, lang: Lang, selected: Screen, poses: Option<[f32; 4]>) -> Dock {
+    let m = t.m;
+    let w = m.w as f32;
+    let height = m.dp(64.0);
+    let h = m.dp(92.0);
+    let y = m.dp(16.0);
+    let inset = m.dp(4.0);
+    let cell = m.dp(76.0);
+    let outer = (cell * 4.0 + inset * 2.0).min(w - m.dp(24.0));
+    let x = (w - outer) / 2.0;
+    let mut c = Canvas::new(m.w, h.ceil() as u32);
+    // Lifted off the page, as floating bars are.
+    let shadow = if t.dark { Rgba::rgb(0, 0, 0).with_alpha(51) } else { Rgba::rgb(0, 0, 0).with_alpha(26) };
+    c.shadow_round_rect(x, y, outer, height, height / 2.0, m.dp(4.0), shadow);
+    c.fill_round_rect(x, y, outer, height, height / 2.0, t.pal.card);
+    let cw = (outer - inset * 2.0) / 4.0;
+    let mut hits = Vec::with_capacity(TABS.len());
+    let selected_index = TABS.iter().position(|&tab| tab == selected).unwrap_or(0);
+    let index = poses.map_or(selected_index as f32, |weights| {
+        weights.iter().enumerate().map(|(i, weight)| i as f32 * weight).sum()
+    });
+    c.fill_round_rect(x + inset + cw * index, y + inset, cw, height - inset * 2.0,
+        (height - inset * 2.0) / 2.0, t.pal.accent.with_alpha(38));
+    for (index, screen) in TABS.into_iter().enumerate() {
+        let cx = x + inset + cw * (index as f32 + 0.5);
+        let pill = Rect::new(cx - cw / 2.0, y + inset, cw, height - inset * 2.0);
+        let ink = if screen == selected { t.pal.accent } else { t.pal.subtitle.with_alpha(102) };
+        let icon = match screen {
+            Screen::Home => Icon::Dashboard,
+            Screen::Regular => Icon::PhoneDownload,
+            Screen::Advanced => Icon::Wrench,
+            _ => Icon::Gear,
+        };
+        icons::glyph(&mut c, icon, cx, pill.y + m.dp(17.0), m.dp(24.0), ink);
+        c.text_center(&f.body, title(screen, lang), cx, pill.y + m.dp(40.0), m.dp(11.0), ink);
+        hits.push(Hit { rect: pill, action: Action::SelectTab(screen) });
+    }
+    Dock { canvas: c, hits }
+}
+
 impl App {
-    pub(super) fn select_tab(&mut self, screen: Screen, now: u64) {
-        if self.state.style != UiStyle::MaterialExpressive || self.stack.len() != 1 {
-            return;
+    pub(super) fn select_tab(&mut self, screen: Screen, now: u64) -> Vec<Effect> {
+        let mut fx = Vec::new();
+        let Some(to) = TABS.iter().position(|&tab| tab == screen) else { return fx };
+        // The dock stands under every page: a page opened over a
+        // destination gives way first, without a slide of its own.
+        let mut steps = 0;
+        while self.stack.len() > 1 && steps < 8 {
+            let before = self.stack.len();
+            self.shown = None;
+            fx.extend(self.back(now));
+            if self.stack.len() == before {
+                return fx;
+            }
+            steps += 1;
         }
-        let Some(from) = TABS.iter().position(|&tab| tab == self.screen()) else { return };
-        let Some(to) = TABS.iter().position(|&tab| tab == screen) else { return };
+        let Some(from) = TABS.iter().position(|&tab| tab == self.screen()) else {
+            // The recovery started on a page of its own: the dock opens the
+            // destination over it.
+            self.open(screen);
+            return fx;
+        };
         if from == to {
-            return;
-        }
-        if !self.state.appearance.reduce_motion {
-            let interrupted = self.tab_motion.take();
-            let initial = interrupted.as_ref().map_or_else(
-                || std::array::from_fn(|index| if from == index { 1.0 } else { 0.0 }),
-                |motion| motion.poses(TABS[from], now),
-            );
-            let last_page = if let (Some(motion), Some((_, incoming))) = (interrupted, self.layer.as_ref()) {
-                let mut composed = self.backdrop.take().unwrap_or_else(|| Canvas::new(self.w, self.h));
-                motion.paint(&mut composed, incoming, now);
-                self.backdrop = Some(motion.previous);
-                Some(composed)
-            } else {
-                self.leave(false);
-                self.turn.take().map(|turn| turn.left)
-            };
-            self.tab_motion = last_page.map(|previous| TabMotion {
-                initial,
-                direction: if to > from { 1 } else { -1 },
-                started: now,
-                previous,
-            });
+            return fx;
         }
         let (_, scroll, focus) = *self.top();
         self.tab_positions[from] = (scroll, focus);
         let (scroll, focus) = self.tab_positions[to];
+        // The page left is kept as it showed, to slide away from.
+        let resting = std::array::from_fn(|index| if from == index { 1.0 } else { 0.0 });
+        let (initial, previous) = if self.state.appearance.reduce_motion {
+            (resting, None)
+        } else if self.tab_motion.is_some() && self.layer.is_some() {
+            let interrupted = self.tab_motion.take().expect("a tab motion was running");
+            let initial = interrupted.poses(TABS[from], now);
+            let mut composed = self.backdrop.take().unwrap_or_else(|| Canvas::new(self.w, self.h));
+            if let Some((_, incoming)) = self.layer.as_ref() {
+                interrupted.paint(&mut composed, incoming, now);
+            }
+            self.backdrop = Some(interrupted.previous);
+            (initial, Some(composed))
+        } else {
+            self.leave(false);
+            (resting, self.turn.take().map(|turn| turn.left))
+        };
         *self.top_mut() = (screen, scroll, focus);
+        self.tab_motion = previous.map(|previous| TabMotion {
+            initial,
+            direction: if to > from { 1 } else { -1 },
+            started: now,
+            previous,
+        });
         self.settle_page();
         self.refresh();
+        fx
     }
 
     pub(super) fn finish_tab_motion(&mut self) {
@@ -154,13 +241,10 @@ impl App {
         self.button_chip = None;
         self.search_words = None;
         self.tab_positions.fill((0.0, Focus::Unset));
-        // Choosing a style keeps Settings in view. Material Settings becomes
-        // a primary destination; the Miuix version returns to Home on Back.
+        // Choosing a style keeps Settings in view. Both styles treat it as
+        // a primary destination.
         if matches!(self.screen(), Screen::Settings | Screen::Appearance) {
             self.stack.clear();
-            if style == UiStyle::Miuix {
-                self.stack.push((Screen::Home, 0.0, Focus::Unset));
-            }
             self.stack.push((Screen::Settings, 0.0, Focus::Unset));
         }
         self.settle_page();
@@ -198,7 +282,7 @@ mod tests {
     fn material_tabs_reuse_the_existing_screens_and_dock_hits() {
         let (f, i) = (fonts(), info());
         let mut app = App::new(Screen::Home, W, H, PPD);
-        assert!(app.frame(&f, &i).dock.is_none());
+        assert!(app.frame(&f, &i).dock.is_some(), "the dock shows in either style");
         app.state.style = UiStyle::MaterialExpressive;
         app.refresh();
         for screen in [Screen::Regular, Screen::Advanced, Screen::Settings, Screen::Home] {
@@ -209,8 +293,37 @@ mod tests {
         tap(&mut app, &f, &i, Action::SelectTab(Screen::Regular));
         tap(&mut app, &f, &i, Action::Open(Screen::Install));
         assert_eq!(app.screen(), Screen::Install);
-        assert!(app.frame(&f, &i).dock.is_none());
+        assert!(app.frame(&f, &i).dock.is_some(), "the destinations stay under every page");
         tap_back(&mut app, &f, &i, 1000);
         assert_eq!(app.screen(), Screen::Regular);
+    }
+
+    #[test]
+    fn typing_pages_replace_the_destination_dock_in_both_styles() {
+        let (f, i) = (fonts(), info());
+        for style in [UiStyle::Miuix, UiStyle::MaterialExpressive] {
+            let mut app = App::new(Screen::Home, W, H, PPD);
+            app.state.style = style;
+            let mut out = Canvas::new(W, H);
+            app.compose(&mut out, &f, &i, "12:00", 0);
+            tap_button(&mut app, &f, &i, 1000);
+            assert_eq!(app.screen(), Screen::Search);
+            let frame = app.frame(&f, &i);
+            assert!(frame.dock.is_none());
+            let top = frame.canvas.keyboard_top.expect("typing page marks a keyboard");
+            assert_eq!(top, (H as f32 - widgets::keyboard_height(&app.theme())).floor() as u32);
+            app.compose(&mut out, &f, &i, "12:00", 1010);
+            app.compose(&mut out, &f, &i, "12:00", 1110);
+            assert!(app.bottom_level > 0.0 && app.bottom_level < 1.0);
+            app.compose(&mut out, &f, &i, "12:00", 2000);
+            assert_eq!(app.bottom_level, 1.0);
+            app.act(Action::CloseSearch, 2100);
+            app.compose(&mut out, &f, &i, "12:00", 2110);
+            app.compose(&mut out, &f, &i, "12:00", 2210);
+            assert!(app.bottom_level > 0.0 && app.bottom_level < 1.0);
+            app.compose(&mut out, &f, &i, "12:00", 3000);
+            assert_eq!(app.bottom_level, 0.0);
+            assert!(app.bottom_keyboard.is_none());
+        }
     }
 }

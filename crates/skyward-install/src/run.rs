@@ -432,7 +432,9 @@ fn conclude(done: Done, served: Result<Option<Fault>>, origin: Origin) -> Outcom
 fn install<S>(ctx: &mut Context, mount: &Mount<S>, size: u64, file_name: Option<&str>) -> Result<Done> {
     let file = File::open(fuse::PACKAGE).context("open the package")?;
     let package = package::identify(BufReader::with_capacity(1 << 16, file))?;
-    let _ = kmsg(&format!("install: {}", describe(&package)));
+    let description = describe(&package);
+    let _ = kmsg(&format!("install: {description}"));
+    ctx.send(Event::Print(description));
     match package {
         Package::Update(update) => update_system(ctx, mount, &update),
         // The system asks for packages that install themselves, as Android's
@@ -442,6 +444,8 @@ fn install<S>(ctx: &mut Context, mount: &Mount<S>, size: u64, file_name: Option<
             ImageKind::Other => Refusal::Unknown,
             _ => Refusal::Image,
         }))),
+        Package::Image(_) if file_name.is_some_and(|name| Path::new(name).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))) =>
+            Ok(Done::Decided(Outcome::Refused(Refusal::Unknown))),
         Package::Image(image) => flash_image(ctx, &image, file_name),
         Package::Script => run_script(ctx, size),
         Package::System(contents) => install_system(ctx, &contents),
@@ -683,6 +687,7 @@ fn battery() -> Result<Option<Refusal>> {
 
 /// A line update_engine wrote that matters here.
 enum Line {
+    Output(String),
     Status(Status),
     Log(Log),
 }
@@ -731,6 +736,7 @@ fn apply<S>(ctx: &Context, mount: &Mount<S>, update: &Update) -> Result<i32> {
             if let Some(l) = ota::log(line) {
                 let _ = tx.send(Line::Log(l));
             }
+            let _ = tx.send(Line::Output(line.chars().take(2048).collect()));
             writeln!(log, "{line}")
         })
     });
@@ -742,6 +748,7 @@ fn apply<S>(ctx: &Context, mount: &Mount<S>, update: &Update) -> Result<i32> {
     let (mut partitions, mut verifying, mut finishing, mut error) = (0, None, false, None);
     loop {
         match rx.recv_timeout(PROGRESS_EVERY) {
+            Ok(Line::Output(line)) => ctx.send(Event::Print(line)),
             Ok(Line::Status(Status::Step(step))) => finishing = step == 2,
             Ok(Line::Status(Status::Error(code))) => error = Some(code),
             Ok(Line::Log(Log::Partition(_))) => partitions += 1,
@@ -814,6 +821,11 @@ fn flash_image(ctx: &mut Context, image: &Image, file_name: Option<&str>) -> Res
     {
         all.insert(0, target);
     }
+    if image.kind != ImageKind::Other || file_name.is_some_and(|name| {
+        Path::new(name).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("img"))
+    }) {
+        image::add_manual_targets(dir, &logical, &mut all)?;
+    }
     let state = skyward_vab::snapshot_state()?;
     let partitions: Vec<Target> = all.iter().filter(|t| state == SnapshotState::None || t.place == Place::Slotted).cloned().collect();
     if partitions.is_empty() {
@@ -832,6 +844,7 @@ fn flash_image(ctx: &mut Context, image: &Image, file_name: Option<&str>) -> Res
         Ok(other) => bail!("an image waiting for its partition was told {other:?}"),
     };
     let target = partitions.iter().find(|t| t.name == partition).with_context(|| format!("{partition} is not among {partitions:?}"))?;
+    ctx.send(Event::Print(format!("Flash {partition} {slots:?} ({} bytes)", layout.size)));
     let mut file = BufReader::with_capacity(1 << 20, File::open(fuse::PACKAGE).context("open the package")?);
     match target.place {
         Place::Slotted => {
@@ -845,7 +858,7 @@ fn flash_image(ctx: &mut Context, image: &Image, file_name: Option<&str>) -> Res
         Place::Single => {
             ensure!(slots.is_empty(), "{partition} is in no slot, and was sent to {slots:?}");
             let device = dir.join(&partition);
-            if image.kind == ImageKind::Super {
+            if partition == "super" {
                 image::check_super(&mut image::Expanded::new(&mut file, layout), skyward_block::size_bytes(&device)?)?;
                 detach_once(ctx)?;
                 write_image(ctx, &mut file, layout, &[device], false)?;
@@ -857,6 +870,7 @@ fn flash_image(ctx: &mut Context, image: &Image, file_name: Option<&str>) -> Res
             ensure!(slots == [slot], "{partition} is a logical partition of slot {slot:?}, and was sent to {slots:?}");
             skyward_vab::can_remake(slot, &partition, layout.size)?;
             detach_once(ctx)?;
+            ctx.send(Event::Print(format!("Resize logical partition {partition}")));
             ctx.send(Event::Progress(Stage::Resizing));
             let remade = skyward_vab::remake(slot, &partition, layout.size)?;
             let written = write_image(ctx, &mut file, layout, std::slice::from_ref(&remade.device), false);
@@ -871,13 +885,18 @@ fn flash_image(ctx: &mut Context, image: &Image, file_name: Option<&str>) -> Res
 /// Write the image `file` holds to `devices` as `layout` lays it out and
 /// read it back, telling the screen how far it is.
 fn write_image<R: Read + io::Seek>(ctx: &Context, file: &mut R, layout: &Layout, devices: &[PathBuf], footer: bool) -> Result<()> {
+    for device in devices {
+        ctx.send(Event::Print(format!("Write and verify {}", device.display())));
+    }
     let mut told: Option<Instant> = None;
     image::write(file, layout, devices, footer, &mut |done, total| {
         if done == total || told.is_none_or(|t| t.elapsed() >= PROGRESS_EVERY) {
             ctx.send(Event::Progress(Stage::Flashing { done, total }));
             told = Some(Instant::now());
         }
-    })
+    })?;
+    ctx.send(Event::Print("Image verification finished".into()));
+    Ok(())
 }
 
 /// Write the image to partitions the phone has in each slot. One of them
@@ -956,6 +975,15 @@ fn run_script(ctx: &mut Context, size: u64) -> Result<Done> {
     let slot = skyward_vab::current_slot()?.context("not an A/B phone")?;
     extract_script()?;
     shell_at_sbin()?;
+    // Some legacy packages invoke the absolute TWRP applet path.
+    let getevent = Path::new("/system/bin/getevent");
+    if getevent.exists() {
+        match symlink(getevent, "/sbin/getevent") {
+            Ok(()) => {}
+            Err(err) if err.kind() == ErrorKind::AlreadyExists => {}
+            Err(err) => return Err(err).context("make /sbin/getevent available to the installer"),
+        }
+    }
     let kept = hold(ctx, slot)?;
     installed_boot_set()?;
     detach_once(ctx)?;
@@ -1128,11 +1156,15 @@ fn run_binary(ctx: &Context) -> Result<(i32, bool)> {
                 writeln!(log, "[asked for the cache partition to be erased after]").context("write the log")?;
                 wipe_cache = true;
             }
-            Ok(Said::Request(Request::Log(text))) => writeln!(log, "{text}").context("write the log")?,
             Ok(Said::Request(Request::Other(what))) => writeln!(log, "[asked for {what}]").context("write the log")?,
-            Ok(Said::Request(moving)) => bar.hear(&moving, started.elapsed()),
             Ok(Said::Unknown(line)) => writeln!(log, "[unknown request] {line}").context("write the log")?,
-            Ok(Said::Output(line)) => writeln!(log, "{line}").context("write the log")?,
+            Ok(Said::Output(line)) | Ok(Said::Request(Request::Log(line))) => {
+                writeln!(log, "{line}").context("write the log")?;
+                if !line.is_empty() {
+                    ctx.send(Event::Print(line.chars().take(2048).collect()));
+                }
+            }
+            Ok(Said::Request(moving)) => bar.hear(&moving, started.elapsed()),
             Err(RecvTimeoutError::Timeout) => {}
             // Every output has closed: the script, and all it ran, are done.
             Err(RecvTimeoutError::Disconnected) => break,

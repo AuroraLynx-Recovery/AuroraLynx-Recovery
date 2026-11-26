@@ -14,6 +14,7 @@ use skyward_net::download::Failure as DownloadFailure;
 use skyward_net::reach::Reach;
 use skyward_net::release::Unanswered;
 use skyward_net::supplicant::Security;
+use skyward_net::mobile::Mobile as Cellular;
 use skyward_net::wlan::{Bands, Joined, Power, Stage as WlanStage, Wlan};
 use skyward_vab::{Hold, Slot, SnapshotState, Standing};
 use std::sync::OnceLock;
@@ -993,6 +994,16 @@ pub fn wlan_value(l: Lang, w: &Wlan) -> &str {
         (Power::On, Some(Joined { stage: WlanStage::Connected(_), name, .. })) => name,
         (Power::On, Some(_)) => l.pick(texts::wlan::CONNECTING),
         (Power::On, None) => l.pick(texts::wlan::NOT_CONNECTED),
+    }
+}
+
+/// What the home page says beside its mobile entry.
+pub fn mobile_value(l: Lang, m: &Cellular) -> &str {
+    match m.power {
+        Power::Off | Power::Failed(_) => l.pick(texts::mobile::OFF),
+        Power::Starting => l.pick(texts::mobile::TURNING_ON),
+        Power::On if m.address.is_some() => l.pick(texts::mobile::CONNECTED),
+        Power::On => l.pick(texts::mobile::CONNECTING),
     }
 }
 

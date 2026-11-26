@@ -37,7 +37,7 @@ pub fn slot(t: &Theme, keyboard: bool) -> Slot {
         0.0
     };
     let y = m.content_top;
-    let bottom = m.h as f32 - kb - m.dp(72.0);
+    let bottom = if keyboard { t.m.h as f32 } else { t.dock_top() } - kb - m.dp(72.0);
     Slot {
         x: 0.0,
         y,

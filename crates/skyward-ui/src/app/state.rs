@@ -1,6 +1,7 @@
 //! What the pages show and the user changes, all in one place.
 
 use super::*;
+use skyward_net::mobile::Mobile;
 
 /// Choices the pages show and the user changes, and where installing
 /// stands.
@@ -130,6 +131,7 @@ pub struct State {
     pub module_zip: String,
     pub module_zip_busy: bool,
     pub module_zip_result: Option<Result<(), String>>,
+    pub module_zip_output: Vec<String>,
     pub extract_rows: Vec<(String, u64, bool)>,
     pub extract_destination: String,
     pub extract_busy: bool,
@@ -193,6 +195,9 @@ pub struct State {
     /// The WLAN, as the runtime last told it; none on a phone whose WLAN the
     /// recovery does not bring up.
     pub wlan: Option<Wlan>,
+    /// Cellular data, as the runtime last told it; none on a phone whose
+    /// product listed no radio modules or modem helpers.
+    pub mobile: Option<Mobile>,
     /// The network the password page is for, and what is typed there.
     pub joining: Option<Network>,
     /// The network the details page is of, as it was found.
@@ -229,6 +234,8 @@ pub struct State {
     pub agent_field: u8,
     pub agent_chat: Vec<crate::agent::Line>,
     pub agent_busy: bool,
+    pub zt_network: String,
+    pub zt_status: crate::zt::Status,
 }
 
 impl Default for State {
@@ -297,6 +304,7 @@ impl Default for State {
             module_zip: String::new(),
             module_zip_busy: false,
             module_zip_result: None,
+            module_zip_output: Vec::new(),
             extract_rows: Vec::new(),
             extract_destination: String::new(),
             extract_busy: false,
@@ -328,6 +336,7 @@ impl Default for State {
             part_work: None,
             update: Standing::None,
             wlan: None,
+            mobile: None,
             joining: None,
             details: None,
             adding: None,
@@ -350,6 +359,8 @@ impl Default for State {
             agent_field: 3,
             agent_chat: Vec::new(),
             agent_busy: false,
+            zt_network: String::new(),
+            zt_status: crate::zt::Status::default(),
         }
     }
 }
@@ -429,6 +440,7 @@ impl State {
     pub fn offers(&self, screen: Screen) -> bool {
         match screen {
             Screen::Wlan => self.wlan.is_some(),
+            Screen::Mobile => self.mobile.is_some(),
             Screen::SkywardUpdate => self.wlan.is_some() && self.recovery_partitions,
             Screen::Systems => self.dual_boot,
             _ => true,

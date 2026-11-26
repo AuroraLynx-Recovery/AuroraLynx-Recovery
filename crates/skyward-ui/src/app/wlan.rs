@@ -62,6 +62,18 @@ impl App {
         self.dirty = true;
     }
 
+    /// How cellular data stands, as the runtime last told it.
+    pub fn set_mobile(&mut self, m: skyward_net::mobile::Mobile) {
+        if self.state.mobile.as_ref() == Some(&m) {
+            return;
+        }
+        self.state.mobile.replace(m);
+        if matches!(self.screen(), Screen::Home | Screen::Mobile | Screen::Regular | Screen::Update | Screen::SkywardUpdate) {
+            self.refresh();
+        }
+        self.dirty = true;
+    }
+
     /// How fast data went over the network joined in the last second, which
     /// only the status bar shows.
     pub fn set_traffic(&mut self, t: Traffic) {
@@ -99,7 +111,7 @@ mod tests {
     #[test]
     fn the_wlan_page_joins_a_network_with_its_password_and_leaves_it() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Home, W, H, PPD);
+        let mut app = App::new(Screen::Regular, W, H, PPD);
         let entry = |app: &mut App| app.frame(&f, &i).hits.iter().any(|h| h.action == Action::Open(Screen::Wlan));
         assert!(!entry(&mut app), "a phone whose WLAN is not brought up has no WLAN");
         app.state.wlan = Some(Wlan::default());
@@ -271,7 +283,12 @@ mod tests {
         let t = app.theme();
         let stops: Vec<Stop> = focus::spots(&t, app.frame(&f, &i)).iter().map(|s| s.stop).collect();
         let pick = |s| Stop::Hit(Action::PickSecurity(s));
-        assert_eq!(stops, [Stop::Back, pick(Security::Open), pick(Security::Psk), pick(Security::Sae)], "only the list and back");
+        assert_eq!(
+            &stops[..4],
+            &[Stop::Back, pick(Security::Open), pick(Security::Psk), pick(Security::Sae)],
+            "the dropdown has its choices and the back control"
+        );
+        assert!(!stops.contains(&Stop::Hit(Action::SelectTab(Screen::Home))), "the keyboard screen hides its dock");
         light_on(&mut app, &f, &i, pick(Security::Sae));
         press(&mut app, Key::Power, 0);
         let a = app.state.adding.clone().unwrap();
@@ -330,5 +347,27 @@ mod tests {
         assert!(row.contains(round.x + round.w / 2.0, round.y + round.h / 2.0));
         assert_eq!(fr.hit(round.x + round.w / 2.0, round.y + round.h / 2.0).map(|h| h.action), Some(Action::NetworkDetails(1)));
         assert_eq!(fr.hit(row.x + row.w / 3.0, row.y + row.h / 2.0).map(|h| h.action), Some(Action::JoinNetwork(1)));
+    }
+
+    #[test]
+    fn the_mobile_page_turns_on_where_the_product_listed_a_radio() {
+        let (f, i) = (fonts(), info());
+        let mut app = App::new(Screen::Regular, W, H, PPD);
+        let entry = |app: &mut App| app.frame(&f, &i).hits.iter().any(|h| h.action == Action::Open(Screen::Mobile));
+        assert!(!entry(&mut app), "a phone whose radio is not listed has no mobile page");
+        app.state.mobile = Some(skyward_net::mobile::Mobile::default());
+        app.refresh();
+        assert!(entry(&mut app));
+        assert!(app.act(Action::Open(Screen::Mobile), 0).is_empty());
+        assert_eq!(tap(&mut app, &f, &i, Action::Toggle(Switch::Mobile)), vec![Effect::Mobile(true)]);
+        assert_eq!(app.state.mobile.as_ref().unwrap().power, Power::Starting);
+        app.set_mobile(skyward_net::mobile::Mobile {
+            power: Power::On,
+            interface: Some("rmnet_data0".into()),
+            address: Some(std::net::Ipv4Addr::new(10, 42, 0, 8)),
+            ..skyward_net::mobile::Mobile::default()
+        });
+        assert_eq!(tap(&mut app, &f, &i, Action::Toggle(Switch::Mobile)), vec![Effect::Mobile(false)]);
+        assert_eq!(app.state.mobile.as_ref().unwrap().power, Power::Off);
     }
 }

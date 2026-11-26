@@ -158,7 +158,7 @@ pub fn modules(action: ModuleAction) -> Result<()> {
     let root = Path::new("/data/adb/modules");
     ensure!(skyward_block::mount::is_mount_point(Path::new("/data"))?, "open /data first");
     if let ModuleAction::Install { manager, zip } = action {
-        return install_module(manager, &zip);
+        return install_module(manager, &zip, |_| {});
     }
     let (id, flag, set) = match action {
         ModuleAction::Install { .. } => unreachable!("install handled before opening module directory"),
@@ -343,7 +343,7 @@ impl RootManager {
     }
 }
 
-fn install_module(manager: RootManager, archive: &Path) -> Result<()> {
+pub fn install_module(manager: RootManager, archive: &Path, report: impl FnMut(String)) -> Result<()> {
     let archive = archive.canonicalize().context("resolve module ZIP")?;
     ensure!(archive.is_file(), "select a module ZIP file");
     let mut zip = zip::ZipArchive::new(File::open(&archive)?).context("open module ZIP")?;
@@ -414,7 +414,7 @@ fn install_module(manager: RootManager, archive: &Path) -> Result<()> {
         .stderr(stderr)
         .spawn()
         .with_context(|| format!("start {manager:?} module installer"))?;
-    let (status, output) = installer_output(&mut reader, &mut child)
+    let (status, output) = installer_output(&mut reader, &mut child, report)
         .with_context(|| format!("collect {manager:?} module installer result"))?;
     if !output.is_empty() {
         println!("{output}");
@@ -517,8 +517,18 @@ fn isolate_installer_mounts(command: &mut std::process::Command) {
 fn installer_output(
     mut reader: impl Read,
     child: &mut std::process::Child,
+    mut report: impl FnMut(String),
 ) -> io::Result<(std::process::ExitStatus, String)> {
     const LIMIT: usize = 4096;
+    let mut line = Vec::with_capacity(LIMIT);
+    let mut report_line = |line: &mut Vec<u8>| {
+        let text: String = String::from_utf8_lossy(line).chars().filter(|ch| !ch.is_control() || *ch == '\t').collect();
+        let text = text.strip_prefix("ui_print ").unwrap_or(&text);
+        if !text.is_empty() && text != "ui_print" {
+            report(text.to_owned());
+        }
+        line.clear();
+    };
     let mut tail = Vec::with_capacity(LIMIT * 2);
     let mut buffer = [0; LIMIT];
     let mut after_exit = 16;
@@ -527,6 +537,13 @@ fn installer_output(
         match reader.read(&mut buffer) {
             Ok(0) => break child.wait()?,
             Ok(count) => {
+                for &byte in &buffer[..count] {
+                    if byte == b'\n' || byte == b'\r' {
+                        report_line(&mut line);
+                    } else if line.len() < LIMIT {
+                        line.push(byte);
+                    }
+                }
                 tail.extend_from_slice(&buffer[..count]);
                 if tail.len() > LIMIT {
                     tail.drain(..tail.len() - LIMIT);
@@ -550,6 +567,7 @@ fn installer_output(
             Err(error) => return Err(error),
         }
     };
+    report_line(&mut line);
     let text = String::from_utf8_lossy(&tail).chars()
         .filter(|ch| !ch.is_control() || *ch == '\n' || *ch == '\t')
         .collect::<String>().trim().to_string();

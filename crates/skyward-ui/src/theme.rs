@@ -1,5 +1,4 @@
 use crate::color::{over, Rgba};
-use crate::geom::Rect;
 use crate::glow::{self, Glow};
 use serde::{Deserialize, Serialize};
 
@@ -13,20 +12,25 @@ pub enum UiStyle {
     Miuix,
 }
 
-/// Live pose of Material 3 Expressive controls. Miuix leaves this at rest.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ControlId {
+    Switch(i32, i32),
+    Check(i32, i32),
+}
+
+/// Live control positions, rendered with each style’s own geometry.
+#[derive(Clone, Debug)]
 pub struct MotionCue {
     /// Pressed snapshot: tighter button corners and a wider switch thumb.
     pub pose: bool,
     /// Switch thumb travel. Negative `switch_pos` draws the settled boolean.
-    pub switch_cy: f32,
-    pub switch_pos: f32,
+    pub(crate) controls: Vec<(ControlId, f32)>,
+    /// A switch held down: its thumb grows to the pressed size, 0 at rest
+    /// and 1 held, on the row at `switch_press_cy`.
+    pub switch_press_cy: f32,
+    pub switch_press: f32,
     /// Slider and confirm handle, 0 at rest and 1 while held.
     pub handle: f32,
-    /// A check inside this row scales in. Empty when nothing is popping.
-    pub check: Rect,
-    /// 0.6 as the pop starts, 1 when it has settled.
-    pub check_pop: f32,
     /// Segmented buttons whose card starts at `segment_top`.
     pub segment_top: f32,
     pub segment_from: u8,
@@ -36,6 +40,7 @@ pub struct MotionCue {
     pub segment_on: bool,
     /// Keyboard, keypad and menu press.
     pub key: f32,
+    pub(crate) moving_keys: bool,
     /// Back, search and the bar's round button.
     pub icon: f32,
 }
@@ -44,17 +49,17 @@ impl Default for MotionCue {
     fn default() -> Self {
         Self {
             pose: false,
-            switch_cy: 0.0,
-            switch_pos: -1.0,
+            controls: Vec::new(),
+            switch_press_cy: 0.0,
+            switch_press: 0.0,
             handle: 0.0,
-            check: Rect::new(0.0, 0.0, 0.0, 0.0),
-            check_pop: 1.0,
             segment_top: 0.0,
             segment_from: 0,
             segment_to: 0,
             segment: 1.0,
             segment_on: false,
             key: 0.0,
+            moving_keys: false,
             icon: 0.0,
         }
     }
@@ -72,6 +77,8 @@ pub struct Palette {
     pub accent: Rgba,
     pub on_accent: Rgba,
     pub track: Rgba,
+    /// The stop indicator at the far end of a slider's track.
+    pub stop: Rgba,
     pub switch_off: Rgba,
     pub search: Rgba,
     pub search_icon: Rgba,
@@ -165,8 +172,11 @@ pub struct Metrics {
     pub back_h: f32,
     pub back_stroke: f32,
     pub stroke: f32,
-    pub content_top: f32,
-    pub search_h: f32,
+        pub content_top: f32,
+        /// Height of the floating destination dock, so pages, keyboards and
+        /// confirm tracks sit above it.
+        pub dock_h: f32,
+        pub search_h: f32,
     pub search_text_inset: f32,
     pub after_search: f32,
     pub row_title_px: f32,
@@ -207,7 +217,7 @@ impl Metrics {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Theme {
     pub pal: Palette,
     pub hero: Hero,
@@ -230,31 +240,41 @@ impl Theme {
 
     pub fn for_style(w: u32, h: u32, px_per_dp: f32, dark: bool, style: UiStyle) -> Self {
         let mut theme = if dark { Self::dark(w, h, px_per_dp) } else { Self::light(w, h, px_per_dp) };
+        theme.style = style;
+        let dp = |value| value * px_per_dp;
+        // Both styles share the Material page metrics so Miuix Home,
+        // Advanced and Settings can use the same layout as MD3E.
+        theme.m.margin = dp(16.0);
+        theme.m.card_radius = dp(24.0);
+        theme.m.row_h = dp(60.0);
+        theme.m.icon = dp(36.0);
+        theme.m.icon_gap = dp(12.0);
+        theme.m.title_px = dp(36.0);
+        theme.m.title_x = dp(20.0);
+        theme.m.title_top = dp(94.0);
+        theme.m.content_top = dp(145.0);
         if style == UiStyle::MaterialExpressive {
-            theme.style = style;
-            theme.pal = if dark { MATERIAL_DARK } else { MATERIAL_LIGHT };
-            let dp = |value| value * px_per_dp;
-            theme.m.margin = dp(16.0);
-            theme.m.card_radius = dp(24.0);
-            theme.m.row_h = dp(60.0);
-            theme.m.icon = dp(36.0);
-            theme.m.icon_gap = dp(12.0);
             theme.m.switch_w = dp(52.0);
             theme.m.switch_h = dp(32.0);
             theme.m.knob = dp(24.0);
             theme.m.slider_h = dp(44.0);
             theme.m.slider_knob = dp(4.0);
-            theme.m.title_px = dp(36.0);
-            theme.m.title_x = dp(20.0);
-            theme.m.title_top = dp(94.0);
-            theme.m.content_top = dp(145.0);
+            theme.pal = if dark { MATERIAL_DARK } else { MATERIAL_LIGHT };
+            theme.m.dock_h = dp(88.0);
+        } else {
+            theme.m.dock_h = dp(92.0);
         }
         theme
     }
 
+    /// Screen y where the floating dock starts.
+    pub fn dock_top(&self) -> f32 {
+        self.m.h as f32 - self.m.dock_h
+    }
+
     /// This theme with every card as it shows behind a row held down.
     pub fn pressed(&self) -> Theme {
-        let mut t = *self;
+        let mut t = self.clone();
         t.pal.card = over(self.pal.row_press, self.pal.card);
         t.hero.card = over(self.pal.row_press, self.hero.card);
         if t.style == UiStyle::MaterialExpressive {
@@ -290,6 +310,7 @@ fn metrics(w: u32, h: u32, px_per_dp: f32) -> Metrics {
         back_stroke: dp(1.8),
         stroke: dp(2.0),
         content_top: dp(167.7),
+        dock_h: dp(92.0),
         search_h: dp(43.7),
         search_text_inset: dp(43.7),
         after_search: dp(12.7),
@@ -335,6 +356,7 @@ const LIGHT: Palette = Palette {
     accent: Rgba::rgb(74, 128, 247),
     on_accent: Rgba::rgb(255, 255, 255),
     track: Rgba::rgb(240, 240, 240),
+    stop: Rgba::rgb(102, 102, 102),
     switch_off: Rgba::rgb(229, 229, 229),
     search: Rgba::rgb(229, 229, 229),
     search_icon: Rgba::rgb(161, 161, 161),
@@ -384,6 +406,7 @@ const DARK: Palette = Palette {
     accent: Rgba::rgb(84, 136, 248),
     on_accent: Rgba::rgb(255, 255, 255),
     track: Rgba::rgb(46, 46, 46),
+    stop: Rgba::rgb(140, 140, 140),
     switch_off: Rgba::rgb(58, 58, 58),
     search: Rgba::rgb(28, 28, 28),
     search_icon: Rgba::rgb(110, 110, 110),

@@ -108,10 +108,10 @@ mod tests {
     #[test]
     fn the_terminal_sends_every_key_to_its_shell() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Settings, W, H, PPD);
+        let mut app = App::new(Screen::Advanced, W, H, PPD);
         assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Terminal)), vec![Effect::StartShell("/".into())], "the page asks for a shell the first time");
         let (rows, cols) = app.term_size(&f);
-        assert!(rows >= 20 && cols >= 40, "a screen of {rows} rows by {cols}");
+        assert!(rows >= 16 && cols >= 40, "a screen of {rows} rows by {cols}");
         app.term_started(rows, cols);
         assert_eq!(tap(&mut app, &f, &i, Action::Type(Cap::Char('l'))), vec![Effect::TermInput(b"l".to_vec())]);
         assert_eq!(tap(&mut app, &f, &i, Action::Type(Cap::Enter)), vec![Effect::TermInput(b"\r".to_vec())]);

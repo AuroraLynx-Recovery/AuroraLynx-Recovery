@@ -29,12 +29,12 @@ use std::path::Path;
 
 // The colours the stock Settings fills its icons' tiles with, the same in
 // light and dark mode.
-const BLUE: Rgba = Rgba::rgb(0x34, 0x82, 0xff);
-const GREEN: Rgba = Rgba::rgb(0x1d, 0xcd, 0x3a);
-const PURPLE: Rgba = Rgba::rgb(0x77, 0x67, 0xf9);
-const SLATE: Rgba = Rgba::rgb(0x8c, 0x9d, 0xb0);
-const ORANGE: Rgba = Rgba::rgb(0xff, 0x69, 0x00);
-const RED: Rgba = Rgba::rgb(0xfa, 0x38, 0x2e);
+pub(crate) const BLUE: Rgba = Rgba::rgb(0x34, 0x82, 0xff);
+pub(crate) const GREEN: Rgba = Rgba::rgb(0x1d, 0xcd, 0x3a);
+pub(crate) const PURPLE: Rgba = Rgba::rgb(0x77, 0x67, 0xf9);
+pub(crate) const SLATE: Rgba = Rgba::rgb(0x8c, 0x9d, 0xb0);
+pub(crate) const ORANGE: Rgba = Rgba::rgb(0xff, 0x69, 0x00);
+pub(crate) const RED: Rgba = Rgba::rgb(0xfa, 0x38, 0x2e);
 
 /// What every page draws from: style, typefaces, the device readings, and
 /// what the pages hold, from the choices made on them to where the data
@@ -70,14 +70,11 @@ pub fn render(screen: Screen, cx: &Ctx) -> Frame {
         Screen::ModuleZip => module_zip(cx),
         Screen::ExtractPartitions => extract_partitions(cx),
         Screen::ExtractDestination => extract_destination(cx),
-        Screen::Home if cx.t.style == UiStyle::MaterialExpressive => material_home(cx),
-        Screen::Home => home(cx),
+        Screen::Home => material_home(cx),
         Screen::Regular => regular(cx),
-        Screen::Settings if cx.t.style == UiStyle::MaterialExpressive => material_settings(cx),
-        Screen::Settings => settings(cx),
+        Screen::Settings => material_settings(cx),
         Screen::DisplayPreferences => display_preferences(cx),
         Screen::LocalePreferences => locale_preferences(cx),
-        Screen::PartitionFlash => partition_flash(cx),
         Screen::Appearance => appearance(cx),
         Screen::ManualColor => manual_color(cx),
         Screen::Reboot => reboot(cx),
@@ -94,8 +91,7 @@ pub fn render(screen: Screen, cx: &Ctx) -> Frame {
         Screen::Restore => restore(cx),
         Screen::RestoreBackup => restore_backup(cx),
         Screen::BackupJob => backup_job(cx),
-        Screen::Advanced if cx.t.style == UiStyle::MaterialExpressive => material_advanced(cx),
-        Screen::Advanced => advanced(cx),
+        Screen::Advanced => material_advanced(cx),
         Screen::Files => files(cx),
         Screen::FileInfo => file_info(cx),
         Screen::Permissions => permissions(cx),
@@ -123,11 +119,13 @@ pub fn render(screen: Screen, cx: &Ctx) -> Frame {
         Screen::Clash => clash(cx),
         Screen::FileJob => file_job(cx),
         Screen::Wlan => wlan(cx),
+        Screen::Mobile => mobile(cx),
         Screen::WlanPassword => wlan_password(cx),
         Screen::WlanNetwork => wlan_network(cx),
         Screen::WlanAdd => wlan_add(cx),
         Screen::Vnc => vnc(cx),
         Screen::Agent => agent(cx),
+        Screen::ZeroTier => zerotier(cx),
     }
 }
 
@@ -208,10 +206,10 @@ fn hits(rects: &[Rect], actions: &[Action]) -> Vec<Hit> {
     rects.iter().zip(actions).map(|(&rect, &action)| Hit { rect, action }).collect()
 }
 
-/// Recovery home, laid out like the Settings root: title, search, a device
-/// card, then grouped entries. The status bar carries the readings: the
-/// slot, the data partition's lock and the battery's temperature.
-pub fn home(cx: &Ctx) -> Frame {
+/// Archived Miuix home: Settings-style groups. Live Home always uses
+/// [`material_home`], in both styles.
+#[allow(dead_code)]
+pub fn legacy_miuix_home(cx: &Ctx) -> Frame {
     let (t, f, i, l) = (cx.t, cx.f, cx.info, cx.state.lang);
     let mut c = long_page(cx);
     let mut out = Vec::new();
@@ -269,6 +267,10 @@ pub fn home(cx: &Ctx) -> Frame {
     if let Some(w) = &cx.state.wlan {
         rows.push(Row::new(l.pick(texts::page::WLAN)).icon(BLUE, Icon::Wlan).trail(Trail::Value(fmt::wlan_value(l, w))));
         opens.push(Action::Open(Screen::Wlan));
+    }
+    if let Some(m) = &cx.state.mobile {
+        rows.push(Row::new(l.pick(texts::page::MOBILE)).icon(BLUE, Icon::Globe).trail(Trail::Value(fmt::mobile_value(l, m))));
+        opens.push(Action::Open(Screen::Mobile));
     }
     let starts = systems_value(cx);
     if cx.state.offers(Screen::Systems) {
@@ -382,6 +384,14 @@ fn material_home(cx: &Ctx) -> Frame {
     if s.system_notice.is_some() {
         tools.push((Row::new(l.pick(texts::systems::SECOND_FAILED)).tint(t.pal.danger), Screen::Systems));
     }
+    let starts = systems_value(cx);
+    if s.offers(Screen::Systems) {
+        let row = Row::new(l.pick(texts::page::DUAL_BOOT)).icon(t.pal.accent, Icon::Systems);
+        tools.push((match &starts {
+            Some(value) => row.trail(Trail::Value(value)),
+            None => row,
+        }, Screen::Systems));
+    }
     tool_group(cx, &mut c, &mut out, &mut y, &tools);
     Frame {
         button: Some((widgets::Glyph::Search, Action::Open(Screen::Search))),
@@ -398,12 +408,22 @@ fn tool_group(cx: &Ctx, c: &mut Canvas, out: &mut Vec<Hit>, y: &mut f32, tools: 
 }
 
 fn material_wlan(cx: &Ctx, c: &mut Canvas, out: &mut Vec<Hit>, mut y: f32) -> f32 {
+    let l = cx.state.lang;
+    let mut rows = Vec::new();
     if let Some(wlan) = &cx.state.wlan {
-        let l = cx.state.lang;
-        tool_group(cx, c, out, &mut y, &[(
+        rows.push((
             Row::new(l.pick(texts::page::WLAN)).icon(cx.t.pal.accent, Icon::Wlan).trail(Trail::Value(fmt::wlan_value(l, wlan))),
             Screen::Wlan,
-        )]);
+        ));
+    }
+    if let Some(mobile) = &cx.state.mobile {
+        rows.push((
+            Row::new(l.pick(texts::page::MOBILE)).icon(cx.t.pal.accent, Icon::Globe).trail(Trail::Value(fmt::mobile_value(l, mobile))),
+            Screen::Mobile,
+        ));
+    }
+    if !rows.is_empty() {
+        tool_group(cx, c, out, &mut y, &rows);
     }
     y
 }
@@ -428,6 +448,9 @@ fn regular(cx: &Ctx) -> Frame {
     }
     if let Some(wlan) = &s.wlan {
         updates.push((Row::new(l.pick(texts::page::WLAN)).icon(t.pal.accent, Icon::Wlan).trail(Trail::Value(fmt::wlan_value(l, wlan))), Screen::Wlan));
+    }
+    if let Some(mobile) = &s.mobile {
+        updates.push((Row::new(l.pick(texts::page::MOBILE)).icon(t.pal.accent, Icon::Globe).trail(Trail::Value(fmt::mobile_value(l, mobile))), Screen::Mobile));
     }
     y = widgets::section(&mut c, t, f, y - t.m.card_gap, l.pick(texts::material_ui::UPDATES));
     tool_group(cx, &mut c, &mut out, &mut y, &updates);
@@ -457,21 +480,11 @@ fn material_advanced(cx: &Ctx) -> Frame {
     let m = t.m;
     let mut out = Vec::new();
     let y = widgets::section_first(&mut c, t, f, top, l.pick(texts::material_ui::PARTITIONS));
-    let h = m.dp(101.0);
-    let gap = m.dp(8.0);
-    let w = (m.w as f32 - 2.0 * m.margin - gap) / 2.0;
-    let surface = t.pal.track.with_alpha(t.pal.card.a);
-    for (index, (label, screen, icon)) in [
-        (texts::page::EXTRACT_PARTITIONS, Screen::ExtractPartitions, Icon::Folder),
-        (texts::material_ui::FLASH_PARTITIONS, Screen::PartitionFlash, Icon::Install),
-    ].into_iter().enumerate() {
-        let x = m.margin + index as f32 * (w + gap);
-        c.fill_round_rect(x, y, w, h, m.dp(24.0), surface);
-        crate::icons::glyph(&mut c, icon, x + m.dp(31.0), y + m.dp(33.0), m.dp(23.0), t.pal.text);
-        c.text_vc(&f.heading, l.pick(label), x + m.dp(15.0), y + m.dp(76.0), m.dp(16.0), t.pal.text, Some(w - m.dp(30.0)));
-        out.push(Hit { rect: Rect::new(x, y, w, h), action: Action::Open(screen) });
-    }
-    let mut y = widgets::section(&mut c, t, f, y + h, l.pick(texts::material_ui::MANAGEMENT));
+    let mut y = y;
+    tool_group(cx, &mut c, &mut out, &mut y, &[
+        (Row::new(l.pick(texts::page::EXTRACT_PARTITIONS)).icon(BLUE, Icon::Folder), Screen::ExtractPartitions),
+    ]);
+    y = widgets::section(&mut c, t, f, y - m.card_gap, l.pick(texts::material_ui::MANAGEMENT));
     let mut tools = vec![
         (Row::new(l.pick(texts::page::MOUNT)).icon(t.pal.accent, Icon::Mount), Screen::Mount),
         (Row::new(l.pick(texts::material_ui::MODULES)).icon(t.pal.accent, Icon::Layers), Screen::RootModules),
@@ -485,35 +498,13 @@ fn material_advanced(cx: &Ctx) -> Frame {
         (Row::new(l.pick(texts::page::FILES)).icon(t.pal.accent, Icon::Folder), Screen::Files),
         (Row::new(l.pick(texts::page::TERMINAL)).icon(t.pal.accent, Icon::Terminal), Screen::Terminal),
         (Row::new(l.pick(texts::page::AGENT)).icon(t.pal.accent, Icon::Terminal), Screen::Agent),
+        (Row::new(l.pick(texts::page::ZEROTIER)).icon(t.pal.accent, Icon::Globe), Screen::ZeroTier),
         (Row::new(l.pick(texts::page::VNC)).icon(t.pal.accent, Icon::Globe), Screen::Vnc),
         (Row::new(l.pick(texts::page::RELABEL)).icon(t.pal.accent, Icon::Shield), Screen::Relabel),
         (Row::new(l.pick(texts::page::FILESYSTEMS)).icon(t.pal.danger, Icon::Mount), Screen::Filesystems),
         (Row::new(l.pick(texts::page::LOGS)).icon(t.pal.accent, Icon::Log), Screen::Logs),
     ]);
     Frame::new(t, fit(c, t, y), out, crate::app::tabs::title(Screen::Advanced, l), top)
-}
-
-fn partition_flash(cx: &Ctx) -> Frame {
-    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
-    let mut c = long_page(cx);
-    let top = t.m.content_top;
-    let title = l.pick(texts::material_ui::FLASH_PARTITIONS);
-    let y = widgets::section_first(&mut c, t, f, top, l.pick(texts::install::WAYS));
-    let mut out = Vec::new();
-    let storage = if s.data.storage_open() { Screen::Choose(Place::Storage) } else { Screen::Decrypt };
-    let usb = match &s.usb_drive {
-        Some(UsbDrive::Shown) => l.pick(texts::install::CHOOSE_ON_USB_DRIVE),
-        Some(UsbDrive::Unreadable(_)) => l.pick(texts::usb_drive::UNREADABLE),
-        None => l.pick(texts::usb_drive::WANTED),
-    };
-    let rows = [
-        Row::new(l.pick(texts::place::STORAGE)).icon(t.pal.accent, Icon::Phone).subtitle(
-            l.pick(if s.data.storage_open() { texts::install::CHOOSE_IN_STORAGE } else { texts::decrypt::NEEDED })),
-        Row::new(l.pick(texts::place::USB_DRIVE)).icon(t.pal.accent, Icon::UsbDrive).subtitle(usb),
-    ];
-    let group = widgets::list(&mut c, t, f, y, &rows);
-    out.extend(hits(&group.rows, &[Action::Open(storage), Action::Open(Screen::Choose(Place::UsbDrive))]));
-    Frame::new(t, fit(c, t, group.bottom), out, title, top)
 }
 
 /// What the home page says beside its entry to the systems: the one that
@@ -578,6 +569,7 @@ fn material_settings(cx: &Ctx) -> Frame {
     tool_group(cx, &mut c, &mut out, &mut y, &[
         (Row::new(l.pick(texts::page::RECOVERY_CREDENTIAL)).icon(t.pal.accent, Icon::Lock), Screen::RecoveryLock),
         (Row::new(l.pick(texts::page::AGENT)).icon(t.pal.accent, Icon::Terminal), Screen::Agent),
+        (Row::new(l.pick(texts::page::ZEROTIER)).icon(t.pal.accent, Icon::Globe), Screen::ZeroTier),
         (Row::new(l.pick(texts::page::VNC)).icon(t.pal.accent, Icon::Globe), Screen::Vnc),
     ]);
     Frame::new(t, fit(c, t, y), out, l.pick(texts::page::SETTINGS), top)
@@ -631,8 +623,9 @@ fn brightness_and_vibration(cx: &Ctx, c: &mut Canvas, out: &mut Vec<Hit>, top: f
     vibration.bottom
 }
 
-/// Preferences, opening with the stock theme previews.
-pub fn settings(cx: &Ctx) -> Frame {
+/// Archived Miuix settings. Live Settings always uses [`material_settings`].
+#[allow(dead_code)]
+pub fn legacy_miuix_settings(cx: &Ctx) -> Frame {
     let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
     let mut c = long_page(cx);
     let mut out = Vec::new();
@@ -653,9 +646,10 @@ pub fn settings(cx: &Ctx) -> Frame {
     let debug = widgets::list(&mut c, t, f, y, &[
         Row::new(l.pick(texts::page::TERMINAL)).icon(SLATE, Icon::Terminal),
         Row::new(l.pick(texts::page::AGENT)).icon(SLATE, Icon::Terminal),
+        Row::new(l.pick(texts::page::ZEROTIER)).icon(BLUE, Icon::Globe),
         Row::new(l.pick(texts::page::VNC)).icon(BLUE, Icon::Globe),
     ]);
-    out.extend(hits(&debug.rows, &[Action::Open(Screen::Terminal), Action::Open(Screen::Agent), Action::Open(Screen::Vnc)]));
+    out.extend(hits(&debug.rows, &[Action::Open(Screen::Terminal), Action::Open(Screen::Agent), Action::Open(Screen::ZeroTier), Action::Open(Screen::Vnc)]));
     y = widgets::section(&mut c, t, f, debug.bottom, l.pick(texts::settings::ABOUT));
     let mut rows = vec![Row::new(l.pick(texts::page::ABOUT)).trail(Trail::Value(VERSION))];
     let mut opens = vec![Action::Open(Screen::About)];
@@ -1117,7 +1111,7 @@ fn data_status(cx: &Ctx, mut c: Canvas, icon: Icon, title: &str, note: Option<&s
         let again = widgets::button(&mut c, t, f, m.h as f32 * 0.62, l.pick(texts::common::TRY_AGAIN));
         out.push(Hit { rect: again, action: Action::OpenData });
     }
-    let leave_cy = m.h as f32 - m.dp(64.0);
+    let leave_cy = t.dock_top() - m.dp(64.0);
     let leave = l.pick(if matches!(cx.state.data, Data::Open | Data::Erased) { texts::common::DONE } else { texts::decrypt::NOT_NOW });
     c.text_center(&f.heading, leave, x, leave_cy, m.row_title_px, t.pal.accent);
     out.push(Hit { rect: Rect::new(x - m.dp(80.0), leave_cy - m.dp(24.0), m.dp(160.0), m.dp(48.0)), action: Action::Skip });
@@ -1160,7 +1154,7 @@ fn code(cx: &Ctx, mut c: Canvas, user: u32, keys: Keys, checking: bool) -> Frame
     let mut pattern = None;
     let bottom = match keys {
         Keys::Letters => {
-            let top = m.h as f32 - widgets::keyboard_height(t);
+            let top = t.m.h as f32 - widgets::keyboard_height(t);
             let caps = widgets::keyboard(&mut c, t, f, l, top, s.layer, s.key_held(), l.pick(texts::page::DECRYPT));
             if !checking {
                 out.extend(caps.into_iter().map(|(rect, cap)| Hit { rect, action: Action::Type(cap) }));
@@ -1178,7 +1172,7 @@ fn code(cx: &Ctx, mut c: Canvas, user: u32, keys: Keys, checking: bool) -> Frame
             m.h as f32 - m.dp(26.0)
         }
         Keys::Digits => {
-            let top = m.h as f32 - widgets::keypad_height(t);
+            let top = t.m.h as f32 - widgets::keypad_height(t);
             let caps = widgets::keypad(&mut c, t, f, l, top, s.key_held());
             if !checking {
                 out.extend(caps.into_iter().map(|(rect, cap)| Hit { rect, action: Action::Type(cap) }));
@@ -1437,10 +1431,9 @@ fn reflashed(c: &mut Canvas, cx: &Ctx, y: f32) -> f32 {
     }
 }
 
-/// What the install script showed, where there is any: its heading, and
+/// What the installer logged, where there is any: its heading, and
 /// under it the lines as the page's long list, the last thing on the page.
-fn script_output(c: &mut Canvas, cx: &Ctx, y: f32, rows: &mut Option<Rows>) -> f32 {
-    let lines = &cx.state.script_output;
+fn install_log(c: &mut Canvas, cx: &Ctx, y: f32, lines: &[String], rows: &mut Option<Rows>) -> f32 {
     if lines.is_empty() {
         return y;
     }
@@ -1465,7 +1458,10 @@ fn pick_title(l: Lang, pick: Pick, current: Option<Slot>) -> String {
 /// with `adb sideload`, or reading the file chosen, then installing it.
 pub fn installing(cx: &Ctx) -> Frame {
     let (t, f, s, i, l) = (cx.t, cx.f, cx.state, cx.info, cx.state.lang);
-    let mut c = long_page(cx);
+    let mut c = match &s.install {
+        Install::Choosing(choice) => sheet(cx, t.m.h * 3 + (choice.partitions.len() as f32 * t.m.dp(104.0)).ceil() as u32, t.pal.bg),
+        _ => long_page(cx),
+    };
     let (mut out, mut rows) = (Vec::new(), None);
     let top = t.m.content_top;
     let computer = s.source == Source::Computer;
@@ -1542,7 +1538,7 @@ pub fn installing(cx: &Ctx) -> Frame {
                 .partitions
                 .iter()
                 .enumerate()
-                .map(|(k, p)| Row::new(&p.name).subtitle(fmt::partition_role(l, p)).trail(Trail::Check(k == choice.partition)))
+                .map(|(k, p)| Row::new(&p.name).subtitle(fmt::partition_role(l, p)).trail(Trail::Check(Some(k) == choice.partition)))
                 .collect();
             let parts = widgets::list(&mut c, t, f, y, &rows);
             let choose: Vec<Action> = (0..choice.partitions.len()).map(Action::FlashPartition).collect();
@@ -1550,32 +1546,36 @@ pub fn installing(cx: &Ctx) -> Frame {
             // A partition the phone has in each slot goes to the slots
             // picked, and a logical one to the slot the phone runs from,
             // which is shown with nothing to pick; super is in no slot.
-            let bottom = match choice.partitions[choice.partition].place {
-                FlashPlace::Slotted => {
-                    let y = widgets::section(&mut c, t, f, parts.bottom, l.pick(texts::slot::TITLE));
-                    let titles = Pick::ALL.map(|p| pick_title(l, p, i.slot));
-                    let rows: Vec<Row> =
-                        Pick::ALL.iter().zip(&titles).map(|(p, title)| Row::new(title).trail(Trail::Check(*p == choice.pick))).collect();
-                    let picks = widgets::list(&mut c, t, f, y, &rows);
-                    out.extend(hits(&picks.rows, &Pick::ALL.map(Action::FlashSlots)));
-                    picks.bottom
-                }
-                FlashPlace::Logical => {
-                    let y = widgets::section(&mut c, t, f, parts.bottom, l.pick(texts::slot::TITLE));
-                    let title = pick_title(l, Pick::Current, i.slot);
-                    widgets::list(&mut c, t, f, y, &[Row::new(&title).trail(Trail::Check(true))]).bottom
-                }
-                FlashPlace::Single => parts.bottom,
-            };
-            let (label, danger) = confirm_label(Confirm::Flash, cx.state);
-            let track = widgets::confirm(&mut c, t, f, bottom + t.m.dp(28.0), label, danger, s.confirm);
-            out.push(Hit { rect: track, action: Action::Confirm(Confirm::Flash) });
-            let note = l.pick(match s.source {
-                Source::Computer => texts::flash::OVERWRITES_ENDS_SIDELOAD,
-                Source::Rescue => texts::flash::OVERWRITES_LEAVES_RESCUE,
-                Source::File(_) | Source::Opened { .. } | Source::Asked { .. } => texts::flash::OVERWRITES,
-            });
-            widgets::footnote(&mut c, t, f, track.y + track.h, note)
+            if let Some(partition) = choice.partition {
+                let bottom = match choice.partitions[partition].place {
+                    FlashPlace::Slotted => {
+                        let y = widgets::section(&mut c, t, f, parts.bottom, l.pick(texts::slot::TITLE));
+                        let titles = Pick::ALL.map(|p| pick_title(l, p, i.slot));
+                        let rows: Vec<Row> =
+                            Pick::ALL.iter().zip(&titles).map(|(p, title)| Row::new(title).trail(Trail::Check(*p == choice.pick))).collect();
+                        let picks = widgets::list(&mut c, t, f, y, &rows);
+                        out.extend(hits(&picks.rows, &Pick::ALL.map(Action::FlashSlots)));
+                        picks.bottom
+                    }
+                    FlashPlace::Logical => {
+                        let y = widgets::section(&mut c, t, f, parts.bottom, l.pick(texts::slot::TITLE));
+                        let title = pick_title(l, Pick::Current, i.slot);
+                        widgets::list(&mut c, t, f, y, &[Row::new(&title).trail(Trail::Check(true))]).bottom
+                    }
+                    FlashPlace::Single => parts.bottom,
+                };
+                let (label, danger) = confirm_label(Confirm::Flash, cx.state);
+                let track = widgets::confirm(&mut c, t, f, bottom + t.m.dp(28.0), label, danger, s.confirm);
+                out.push(Hit { rect: track, action: Action::Confirm(Confirm::Flash) });
+                let note = l.pick(match s.source {
+                    Source::Computer => texts::flash::OVERWRITES_ENDS_SIDELOAD,
+                    Source::Rescue => texts::flash::OVERWRITES_LEAVES_RESCUE,
+                    Source::File(_) | Source::Opened { .. } | Source::Asked { .. } => texts::flash::OVERWRITES,
+                });
+                widgets::footnote(&mut c, t, f, track.y + track.h, note)
+            } else {
+                parts.bottom
+            }
         }
         Install::Confirming { version, wipe } => {
             use texts::installing::confirm;
@@ -1687,7 +1687,7 @@ pub fn installing(cx: &Ctx) -> Frame {
             let (detail, done) = script_stage(l, stage.as_ref(), &s.script_output);
             let y = widgets::progress_card(&mut c, t, f, top, l.pick(texts::installing::SCRIPT), detail, done);
             let y = widgets::footnote(&mut c, t, f, y, until_installed(l, s.source));
-            script_output(&mut c, cx, y, &mut rows)
+            y
         }
         Install::Wiping => {
             let y = widgets::progress_card(&mut c, t, f, top, l.pick(texts::wipe::WIPING), factory_reset(s), None);
@@ -1706,13 +1706,14 @@ pub fn installing(cx: &Ctx) -> Frame {
             }
             widgets::footnote(&mut c, t, f, y, l.pick(texts::installing::MORE_COMMANDS))
         }
-        Install::Finished { outcome, damage } => finished(&mut c, cx, top, outcome, damage.as_ref(), &mut out, &mut rows),
+        Install::Finished { outcome, damage } => finished(&mut c, cx, top, outcome, damage.as_ref(), &mut out),
     };
     // What the system asked for says why, where it said.
     let bottom = match (s.source, &s.asked.reason) {
         (Source::Asked { .. }, Some(reason)) => widgets::info_card(&mut c, t, f, bottom + t.m.dp(12.0), &[(l.pick(texts::installing::REASON), reason.clone())]),
         _ => bottom,
     };
+    let bottom = install_log(&mut c, cx, bottom, &s.script_output, &mut rows);
     Frame { rows, ..Frame::new(t, fit(c, t, bottom), out, install_title(l, s.source), top) }
 }
 
@@ -1740,7 +1741,6 @@ fn finished(
     outcome: &Outcome,
     damage: Option<&Damage>,
     out: &mut Vec<Hit>,
-    rows: &mut Option<Rows>,
 ) -> f32 {
     let (t, f, source, l) = (cx.t, cx.f, cx.state.source, cx.state.lang);
     let gap = t.m.card_gap;
@@ -1790,8 +1790,7 @@ fn finished(
             let next = widgets::list(c, t, f, y + gap, &[restart, again]);
             out.extend(hits(&next.rows, &[Action::RebootTo(Target::System), another]));
             let y = reflashed(c, cx, next.bottom);
-            let y = afterwards_of(c, cx, y, true);
-            script_output(c, cx, y, rows)
+            afterwards_of(c, cx, y, true)
         }
         Outcome::SystemInstalled { name } => {
             let detail = installed::second_system(l, name);
@@ -1842,7 +1841,7 @@ fn finished(
             }
             let y = reflashed(c, cx, y);
             let y = afterwards_of(c, cx, y, false);
-            script_output(c, cx, y, rows)
+            y
         }
     }
 }
@@ -1957,7 +1956,7 @@ pub fn search(cx: &Ctx) -> Frame {
     widgets::cancel_button(&mut c, t, cancel);
     out.push(Hit { rect: cancel, action: Action::CloseSearch });
     let top = field.field.y + field.field.h + m.dp(12.0);
-    let kb_top = m.h as f32 - widgets::keyboard_height(t);
+    let kb_top = t.m.h as f32 - widgets::keyboard_height(t);
     if s.search.trim().is_empty() {
         widgets::footnote(&mut c, t, f, top, l.pick(texts::search::HOW));
     } else {
@@ -2543,15 +2542,28 @@ fn module_zip(cx: &Ctx) -> Frame {
     };
     let mut c = page(cx);
     let top = t.m.content_top;
-    if s.module_zip_busy || matches!(s.module_zip_result, Some(Ok(()))) {
+    if s.module_zip_busy || s.module_zip_result.is_some() {
         let label = match (s.module_zip_busy, zh) {
             (true, true) => "正在安装模块",
             (true, false) => "Installing module",
             (false, true) => "安装命令已成功完成",
             (false, false) => "Module installer finished",
         };
-        widgets::paragraph(&mut c, t, f, top, label);
-        return Frame::new(t, c, Vec::new(), title, top);
+        let label = match &s.module_zip_result {
+            Some(Err(error)) => error.lines().next().unwrap_or("Module installation failed"),
+            _ => label,
+        };
+        let mut y = widgets::paragraph(&mut c, t, f, top, label);
+        let mut out = Vec::new();
+        if matches!(s.module_zip_result, Some(Err(_))) {
+            let retry = if zh { "重试" } else { "Retry" };
+            let list = widgets::list(&mut c, t, f, y + t.m.card_gap, &[Row::new(retry)]);
+            y = list.bottom;
+            out.extend(hits(&list.rows, &[Action::Type(widgets::Cap::Enter)]));
+        }
+        let mut rows = None;
+        let bottom = install_log(&mut c, cx, y, &s.module_zip_output, &mut rows);
+        return Frame { rows, ..Frame::new(t, fit(c, t, bottom), out, title, top) };
     }
     let places: Vec<_> = [Place::Storage, Place::UsbDrive].into_iter().filter(|place| s.place_open(*place)).collect();
     let mut out = Vec::new();
@@ -2566,10 +2578,7 @@ fn module_zip(cx: &Ctx) -> Frame {
     let label = if zh { "选择 ZIP 或输入绝对路径，确认后运行安装脚本" }
         else { "Choose a ZIP or enter its absolute path to run its installer" };
     let y = widgets::paragraph(&mut c, t, f, y, label);
-    let (y, caret) = widgets::text_field(&mut c, t, f, y, &s.module_zip);
-    if let Some(Err(error)) = &s.module_zip_result {
-        widgets::footnote(&mut c, t, f, y, error);
-    }
+    let (_, caret) = widgets::text_field(&mut c, t, f, y, &s.module_zip);
     keyboard_hits(&mut c, t, f, s, if zh { "安装" } else { "Install" }, &mut out);
     Frame { caret: Some(caret), ..Frame::new(t, c, out, title, top) }
 }
@@ -2661,7 +2670,9 @@ fn root_modules(cx: &Ctx, detail: bool) -> Frame {
     Frame::new(t, fit(c, t, y), out, title, top)
 }
 
-pub fn advanced(cx: &Ctx) -> Frame {
+/// Archived Miuix advanced list. Live Advanced always uses [`material_advanced`].
+#[allow(dead_code)]
+pub fn legacy_miuix_advanced(cx: &Ctx) -> Frame {
     let (t, f, l) = (cx.t, cx.f, cx.state.lang);
     let mut c = long_page(cx);
     let top = t.m.content_top;
@@ -2669,9 +2680,9 @@ pub fn advanced(cx: &Ctx) -> Frame {
         Row::new(l.pick(texts::page::FILES)).icon(BLUE, Icon::Folder),
         Row::new(l.pick(texts::page::TERMINAL)).icon(SLATE, Icon::Terminal),
         Row::new(l.pick(texts::page::AGENT)).icon(SLATE, Icon::Terminal),
+        Row::new(l.pick(texts::page::ZEROTIER)).icon(BLUE, Icon::Globe),
         Row::new(l.pick(texts::page::VNC)).icon(BLUE, Icon::Globe),
         Row::new(if l == Lang::Hans { "Recovery 密码" } else { "Recovery credential" }).icon(PURPLE, Icon::Lock),
-        Row::new(l.pick(texts::material_ui::FLASH_PARTITIONS)).icon(RED, Icon::Install),
         Row::new(if l == Lang::Hans { "提取分区" } else { "Extract partitions" }).icon(BLUE, Icon::Folder),
         Row::new(if l == Lang::Hans { "Root 模块" } else { "Root modules" }).icon(PURPLE, Icon::Layers),
         Row::new(l.pick(texts::page::RELABEL)).icon(PURPLE, Icon::Shield),
@@ -2683,9 +2694,9 @@ pub fn advanced(cx: &Ctx) -> Frame {
         Action::Open(Screen::Files),
         Action::Open(Screen::Terminal),
         Action::Open(Screen::Agent),
+        Action::Open(Screen::ZeroTier),
         Action::Open(Screen::Vnc),
         Action::Open(Screen::RecoveryLock),
-        Action::Open(Screen::PartitionFlash),
         Action::Open(Screen::ExtractPartitions),
         Action::Open(Screen::RootModules),
         Action::Open(Screen::Relabel),
@@ -3320,6 +3331,40 @@ pub fn wlan(cx: &Ctx) -> Frame {
     Frame::new(t, fit(c, t, y), out, l.pick(texts::page::WLAN), top)
 }
 
+/// Cellular data: a switch, then the interface and address the modem holds.
+pub fn mobile(cx: &Ctx) -> Frame {
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let m = s.mobile.as_ref().expect("the mobile page shows on a phone whose radio is brought up");
+    let mut c = long_page(cx);
+    let mut out = Vec::new();
+    let top = t.m.content_top;
+    let on = !matches!(m.power, Power::Off | Power::Failed(_));
+    let switch = widgets::list(&mut c, t, f, top, &[Row::new(l.pick(texts::page::MOBILE)).trail(Trail::Switch(on))]);
+    out.extend(hits(&switch.rows, &[Action::Toggle(Switch::Mobile)]));
+    let mut y = switch.bottom;
+    match &m.power {
+        Power::Off => y = widgets::footnote(&mut c, t, f, y, l.pick(texts::mobile::TURN_ON_NOTE)),
+        Power::Failed(why) => y = widgets::footnote(&mut c, t, f, y, &texts::mobile::cant_turn_on(l, why)),
+        Power::Starting => y = widgets::footnote(&mut c, t, f, y, l.pick(texts::mobile::TURNING_ON)),
+        Power::On => {
+            let iface = m.interface.as_deref().unwrap_or("—");
+            let addr = m.address.map(|a| a.to_string()).unwrap_or_else(|| l.pick(texts::mobile::CONNECTING).to_owned());
+            let rows = [
+                Row::new(l.pick(texts::mobile::INTERFACE)).trail(Trail::Value(iface)),
+                Row::new(l.pick(texts::wlan::IP_ADDRESS)).trail(Trail::Value(&addr)),
+            ];
+            let list = widgets::list(&mut c, t, f, y + t.m.card_gap, &rows);
+            y = list.bottom;
+            if let Some(note) = m.reach.as_ref().and_then(|r| fmt::reach(l, r)) {
+                y = widgets::footnote(&mut c, t, f, y, &note);
+            } else {
+                y = widgets::footnote(&mut c, t, f, y, l.pick(texts::mobile::NO_APN));
+            }
+        }
+    }
+    Frame::new(t, fit(c, t, y), out, l.pick(texts::page::MOBILE), top)
+}
+
 /// The password of the network chosen: its name, what is typed, a switch
 /// to show it, and the keyboard.
 pub fn wlan_password(cx: &Ctx) -> Frame {
@@ -3529,6 +3574,7 @@ pub fn row(screen: Screen, cx: &Ctx, i: usize, c: &mut Canvas) {
             let entries = folder.entries.as_ref().expect("a folder listed draws its rows");
             files::row(c, cx.t, cx.f, cx.state.lang, &entries[i], folder.listed, cx.state.zone());
         }
+        Screen::ModuleZip => widgets::output_row(c, cx.t, cx.f, &cx.state.module_zip_output, i),
         Screen::Installing => widgets::output_row(c, cx.t, cx.f, &cx.state.script_output, i),
         Screen::PartWork => {
             let work = cx.state.part_work.as_ref().expect("the page of partition work shows work");
@@ -3831,6 +3877,50 @@ fn agent(cx: &Ctx) -> Frame {
     out.extend(hits(&send.rows, &[Action::AgentSend]));
     keyboard_hits(&mut c, t, f, s, l.pick(texts::agent::SEND), &mut out);
     Frame { caret: Some(caret), ..Frame::new(t, fit(c, t, send.bottom), out, l.pick(texts::page::AGENT), top) }
+}
+
+/// Join Aurora 互联's ZeroTier network. The node identity is reused from
+/// `/data/misc/aurora_zerotier` when that file is readable.
+fn zerotier(cx: &Ctx) -> Frame {
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let m = &t.m;
+    let mut c = long_page(cx);
+    let mut out = Vec::new();
+    let top = m.content_top;
+    let mut y = widgets::paragraph(&mut c, t, f, top, l.pick(texts::zerotier::NETWORK));
+    let (y_after, caret) = widgets::text_field(&mut c, t, f, y, &s.zt_network);
+    let connected = s.zt_status.state == "online" || s.zt_status.state == "connecting" || s.zt_status.state == "retrying";
+    let action = if connected {
+        (l.pick(texts::zerotier::LEAVE), Action::ZeroTierLeave)
+    } else {
+        (l.pick(texts::zerotier::JOIN), Action::ZeroTierJoin)
+    };
+    let join = widgets::list(&mut c, t, f, y_after, &[Row::new(action.0)]);
+    out.extend(hits(&join.rows, &[action.1]));
+    let mut body = if crate::zt::present() {
+        l.pick(texts::zerotier::NOTE).to_string()
+    } else {
+        l.pick(texts::zerotier::MISSING).to_string()
+    };
+    if !s.zt_status.state.is_empty() {
+        body.push('\n');
+        body.push_str(&s.zt_status.state);
+        if !s.zt_status.node.is_empty() {
+            body.push_str("\n");
+            body.push_str(&s.zt_status.node);
+        }
+        if !s.zt_status.addresses.is_empty() {
+            body.push('\n');
+            body.push_str(&s.zt_status.addresses.join(" "));
+        }
+        if !s.zt_status.error.is_empty() {
+            body.push('\n');
+            body.push_str(&s.zt_status.error);
+        }
+    }
+    widgets::footnote(&mut c, t, f, join.bottom, &body);
+    keyboard_hits(&mut c, t, f, s, action.0, &mut out);
+    Frame { caret: Some(caret), ..Frame::new(t, fit(c, t, join.bottom), out, l.pick(texts::page::ZEROTIER), top) }
 }
 
 /// A shell on a terminal: the screen it writes, the keys a phone keyboard

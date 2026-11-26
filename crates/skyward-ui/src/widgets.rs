@@ -302,8 +302,8 @@ pub fn status_bar(c: &mut Canvas, t: &Theme, f: &Fonts, bar: &Bar, ink: Rgba) {
     let mut right = m.w as f32 - m.status_right;
     if let Some((level, charging)) = bar.battery {
         if t.style == UiStyle::MaterialExpressive {
-            crate::battery_aosp17::draw(c, t, f, level, charging.is_some(), right, cy);
-            right -= m.dp(crate::battery_aosp17::WIDTH_DP);
+            crate::battery_aosp17::draw(c, t, level, charging.is_some(), right, cy);
+            right -= m.dp(crate::battery_aosp17::width_dp(charging.is_some()));
         } else {
             if let Some(kind) = charging {
                 let x = m.w as f32 - m.status_bolt_right - m.dp(BOLT_W_DP);
@@ -775,6 +775,26 @@ pub fn back_cue_depth(t: &Theme, travel: f32) -> f32 {
 /// light blue, holding a white `<` once lifting there would go back. The
 /// `<` points back on either edge.
 pub fn back_cue(c: &mut Canvas, t: &Theme, from_left: bool, cy: f32, depth: f32, arrow: bool) {
+    if t.style == UiStyle::Miuix {
+        miuix_back_cue(c, t, from_left, cy, depth, arrow);
+        return;
+    }
+    if depth <= 0.0 { return; }
+    let m = &t.m;
+    let radius = m.dp(20.0);
+    let reach = (depth / m.dp(42.0)).clamp(0.0, 1.0);
+    let cx = -radius + reach * m.dp(48.0);
+    let cx = if from_left { cx } else { m.w as f32 - cx };
+    c.fill_circle(cx, cy, radius, t.pal.track);
+    if arrow {
+        let half = m.dp(5.0);
+        let ink = t.pal.text;
+        c.line(cx + half / 2.0, cy - half, cx - half / 2.0, cy, m.dp(2.0), ink);
+        c.line(cx - half / 2.0, cy, cx + half / 2.0, cy + half, m.dp(2.0), ink);
+    }
+}
+
+fn miuix_back_cue(c: &mut Canvas, t: &Theme, from_left: bool, cy: f32, depth: f32, arrow: bool) {
     const FILL: Rgba = Rgba::rgb(48, 48, 48);
     const RIM: Rgba = Rgba::rgb(117, 170, 246);
     let m = &t.m;
@@ -1394,7 +1414,12 @@ pub fn dock_bar(t: &Theme, f: &Fonts, bg: Rgba, labels: &[&str]) -> (Canvas, Vec
     let mut rects = Vec::new();
     for (k, label) in labels.iter().enumerate() {
         let x = m.margin + k as f32 * (w + gap);
-        let (fill, ink) = if k + 1 == labels.len() { (t.pal.accent, Rgba::rgb(255, 255, 255)) } else { (t.pal.search, t.pal.text) };
+        let (fill, ink) = if k + 1 == labels.len() {
+            let ink = if t.style == UiStyle::MaterialExpressive { t.pal.on_accent } else { Rgba::rgb(255, 255, 255) };
+            (t.pal.accent, ink)
+        } else {
+            (t.pal.search, t.pal.text)
+        };
         c.fill_round_rect(x, pad, w, h, h / 2.0, fill);
         c.text_center_in(&f.heading, label, x + w / 2.0, pad + h / 2.0, m.row_title_px, ink, w - h / 2.0);
         rects.push(Rect::new(x, pad, w, h));
@@ -1787,7 +1812,7 @@ pub fn choices(c: &mut Canvas, t: &Theme, f: &Fonts, row: Rect, names: &[&str], 
     let (x, y) = (row.x + row.w - m.dp(CHOICES_RIGHT) - w, row.y + m.dp(CHOICES_DROP));
     let h = pad * 2.0 + item * names.len() as f32;
     let rects: Vec<Rect> = (0..names.len()).map(|i| Rect::new(x, y + pad + item * i as f32, w, item)).collect();
-    let squeeze = if t.style == UiStyle::MaterialExpressive { (1.0 - 0.03 * t.motion.key.clamp(0.0, 1.2)).clamp(0.94, 1.04) } else { 1.0 };
+    let squeeze = (1.0 - 0.03 * t.motion.key.clamp(0.0, 1.2)).clamp(0.94, 1.04);
     let (cx, cy) = (x + w / 2.0, y + h / 2.0);
     let map = |px: f32, py: f32| (cx + (px - cx) * squeeze, cy + (py - cy) * squeeze);
     let (x, y) = map(x, y);
@@ -1879,7 +1904,7 @@ pub fn list_toned(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, rows: &[Row], 
                 if index == 0 { m.card_radius } else { r2 },
                 if index + 1 == rows.len() { m.card_radius } else { r2 },
             );
-            c.fill_round_rect_ends(m.margin, y, w, l.h, ends, &|_| tone.card);
+            c.fill_round_rect_corners(m.margin, y, w, l.h, [ends.0, ends.0, ends.1, ends.1], &|_| tone.card);
         }
         draw_row(c, t, f, r, l, y, tone);
         rects.push(Rect::new(m.margin, y, w, l.h));
@@ -1928,32 +1953,49 @@ pub fn device_card(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, title: &str, 
 
 pub fn switch(c: &mut Canvas, t: &Theme, right: f32, cy: f32, on: bool) {
     let m = &t.m;
-    let (w, h, k) = (m.switch_w, m.switch_h, m.knob);
+    let (w, h) = (m.switch_w, m.switch_h);
     let x = right - w;
-    let live = t.style == UiStyle::MaterialExpressive && (cy - t.motion.switch_cy).abs() < m.dp(2.0) && t.motion.switch_pos >= 0.0;
-    let pos = if live { t.motion.switch_pos.clamp(0.0, 1.0) } else if on { 1.0 } else { 0.0 };
-    let track = if t.style == UiStyle::MaterialExpressive { mix(t.pal.switch_off, t.pal.accent, pos) } else if on { t.pal.accent } else { t.pal.switch_off };
+    let key = crate::theme::ControlId::Switch(right.round() as i32, cy.round() as i32);
+    c.controls.push((key, on));
+    let pos = t.motion.controls.iter().find(|(id, _)| *id == key)
+        .map_or(if on { 1.0 } else { 0.0 }, |(_, pos)| *pos);
+    let press = if (cy - t.motion.switch_press_cy).abs() < m.dp(2.0) { t.motion.switch_press.clamp(0.0, 1.0) } else { 0.0 };
+    let track = mix(t.pal.switch_off, t.pal.accent, pos);
     c.fill_round_rect(x, cy - h / 2.0, w, h, h / 2.0, track);
-    let kx = (x + h / 2.0) + (right - h / 2.0 - (x + h / 2.0)) * pos;
-    if t.style == UiStyle::MaterialExpressive {
-        let press = if t.motion.pose { 1.0 } else { 0.0 };
-        let diameter = m.dp(16.0) + (k - m.dp(16.0)) * pos;
-        let tw = diameter + m.dp(4.0) * press;
-        let thumb = mix(t.pal.chevron, t.pal.on_accent, pos);
-        c.fill_round_rect(kx - tw / 2.0, cy - diameter / 2.0, tw, diameter, diameter / 2.0, thumb);
-        let mark_on = t.pal.accent.with_alpha((255.0 * pos) as u8);
-        let mark_off = t.pal.bg.with_alpha((255.0 * (1.0 - pos)) as u8);
-        let stroke = m.dp(1.8);
-        if pos > 0.04 {
-            c.line(kx - m.dp(5.0), cy, kx - m.dp(1.0), cy + m.dp(4.0), stroke, mark_on);
-            c.line(kx - m.dp(1.0), cy + m.dp(4.0), kx + m.dp(6.0), cy - m.dp(4.0), stroke, mark_on);
-        }
-        if pos < 0.96 {
-            c.line(kx - m.dp(4.0), cy - m.dp(4.0), kx + m.dp(4.0), cy + m.dp(4.0), stroke, mark_off);
-            c.line(kx - m.dp(4.0), cy + m.dp(4.0), kx + m.dp(4.0), cy - m.dp(4.0), stroke, mark_off);
-        }
-    } else {
-        c.fill_circle(kx, cy, k / 2.0, Rgba::rgb(255, 255, 255));
+    let kx = x + h / 2.0 + (w - h) * pos;
+    if t.style == UiStyle::Miuix {
+        c.fill_circle(kx, cy, (m.knob + m.dp(2.0) * press) / 2.0, Rgba::rgb(255, 255, 255));
+        return;
+    }
+    if pos < 0.995 {
+        // Its outline while off, gone as the accent fills it.
+        let ink = t.pal.outline.with_alpha((255.0 * (1.0 - pos)).round() as u8);
+        let stroke = m.dp(2.0);
+        c.stroke_round_rect(x + stroke / 2.0, cy - h / 2.0 + stroke / 2.0, w - stroke, h - stroke, h / 2.0 - stroke / 2.0, stroke, ink);
+    }
+    // The thumb is the same circle on and off, growing a little while held;
+    // an off thumb smaller than an on one reads as a different switch.
+    let d = m.dp(24.0) + m.dp(4.0) * press;
+    if press > 0.01 {
+        // The 40 dp state layer under a held thumb.
+        let ink = t.pal.row_press.with_alpha((t.pal.row_press.a as f32 * press).round() as u8);
+        c.fill_circle(kx, cy, m.dp(20.0), ink);
+    }
+    let thumb = mix(t.pal.outline, t.pal.on_accent, pos);
+    c.fill_circle(kx, cy, d / 2.0, thumb);
+    // The icon: a check while it is on, a cross while it is off.
+    let stroke = m.dp(2.0);
+    let check = ((pos - 0.35) / 0.4).clamp(0.0, 1.0);
+    let cross = ((0.65 - pos) / 0.4).clamp(0.0, 1.0);
+    if check > 0.01 {
+        let ink = t.pal.accent.with_alpha((255.0 * check).round() as u8);
+        c.line(kx - m.dp(4.5), cy + m.dp(0.2), kx - m.dp(1.2), cy + m.dp(3.5), stroke, ink);
+        c.line(kx - m.dp(1.2), cy + m.dp(3.5), kx + m.dp(4.8), cy - m.dp(4.0), stroke, ink);
+    }
+    if cross > 0.01 {
+        let ink = t.pal.switch_off.with_alpha((255.0 * cross).round() as u8);
+        c.line(kx - m.dp(3.8), cy - m.dp(3.8), kx + m.dp(3.8), cy + m.dp(3.8), stroke, ink);
+        c.line(kx - m.dp(3.8), cy + m.dp(3.8), kx + m.dp(3.8), cy - m.dp(3.8), stroke, ink);
     }
 }
 
@@ -1963,28 +2005,27 @@ pub fn slider(c: &mut Canvas, t: &Theme, x: f32, top: f32, w: f32, value: f32) {
     let m = &t.m;
     let h = m.slider_h;
     if t.style == UiStyle::MaterialExpressive {
+        // Material 3 Expressive, as Compose draws it: a 16 dp track whose
+        // ends beside the handle are barely rounded, a 4 × 44 dp handle that
+        // narrows to half while held, the gap 6 dp beyond its edge, and a
+        // 4 dp stop at the far end. The handle carries no state layer.
         let thick = m.dp(16.0);
         let track_y = top + (h - thick) / 2.0;
-        // SukiSU's gap is 6dp plus half the resting handle, and the track
-        // is a 16dp capsule. The stop sits one outer radius in from the end.
-        let gap = m.dp(6.0) + m.slider_knob / 2.0;
-        let outer = thick / 2.0;
-        let handle = x + w * value.clamp(0.0, 1.0);
-        let before = (handle - gap - x).max(0.0);
-        let after = (x + w - handle - gap).max(0.0);
-        if before > 0.0 {
-            c.fill_round_rect(x, track_y, before, thick, outer, t.pal.accent);
-        }
-        if after > 0.0 {
-            c.fill_round_rect(x + w - after, track_y, after, thick, outer, t.pal.track);
-        }
-        if after > outer * 2.0 {
-            c.fill_circle(x + w - outer, top + h / 2.0, m.dp(2.0), t.pal.accent);
-        }
         let press = t.motion.handle.clamp(0.0, 1.0);
         let handle_w = m.slider_knob * (1.0 - 0.5 * press);
-        if press > 0.01 {
-            c.fill_round_rect(handle - m.dp(10.0), top - m.dp(6.0), m.dp(20.0), h + m.dp(12.0), m.dp(10.0), t.pal.accent.with_alpha((26.0 * press) as u8));
+        let handle = x + w * value.clamp(0.0, 1.0);
+        let gap = m.dp(6.0) + handle_w / 2.0;
+        let (outer, inside) = (thick / 2.0, m.dp(2.0));
+        let active_end = (handle - gap).clamp(x, x + w);
+        let inactive_start = (handle + gap).clamp(x, x + w);
+        if active_end > x + 0.5 {
+            c.fill_round_rect_ends(x, track_y, active_end - x, thick, (outer, inside), &|_| t.pal.accent);
+        }
+        if inactive_start < x + w - 0.5 {
+            c.fill_round_rect_ends(inactive_start, track_y, x + w - inactive_start, thick, (inside, outer), &|_| t.pal.track);
+            if x + w - inactive_start > outer * 2.0 {
+                c.fill_circle(x + w - outer, top + h / 2.0, m.dp(2.0), t.pal.stop);
+            }
         }
         c.fill_round_rect(handle - handle_w / 2.0, top, handle_w, h, handle_w / 2.0, t.pal.accent);
         return;
@@ -1992,7 +2033,8 @@ pub fn slider(c: &mut Canvas, t: &Theme, x: f32, top: f32, w: f32, value: f32) {
     c.fill_round_rect(x, top, w, h, h / 2.0, t.pal.track);
     let fw = (w * value.clamp(0.0, 1.0)).max(h);
     c.fill_round_rect(x, top, fw, h, h / 2.0, t.pal.accent);
-    c.fill_circle(x + fw - h / 2.0, top + h / 2.0, m.slider_knob / 2.0, Rgba::rgb(255, 255, 255));
+    let knob = m.slider_knob * (1.0 - 0.10 * t.motion.handle.clamp(0.0, 1.0));
+    c.fill_circle(x + fw - h / 2.0, top + h / 2.0, knob / 2.0, Rgba::rgb(255, 255, 255));
 }
 
 /// Where a slider card ends, its track, and the row under the slider.
@@ -2065,18 +2107,11 @@ pub fn slider_card(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, caption: Capt
 /// Center of a swipe-to-confirm handle, how far a finger may miss it, and
 /// the origin and length of its travel. Expressive uses the same inset the
 /// pill is drawn with, so the handle stays under the finger.
-pub fn confirm_handle(t: &Theme, track: Rect, progress: f32) -> (f32, f32, f32, f32) {
+pub fn confirm_handle(_t: &Theme, track: Rect, progress: f32) -> (f32, f32, f32, f32) {
     let progress = progress.clamp(0.0, 1.0);
-    if t.style == UiStyle::MaterialExpressive {
-        let inset = t.m.dp(14.0);
-        let travel = (track.w - inset * 2.0).max(1.0);
-        let origin = track.x + inset;
-        (origin + travel * progress, t.m.dp(28.0), origin, travel)
-    } else {
-        let travel = (track.w - track.h).max(1.0);
-        let origin = track.x + track.h / 2.0;
-        (origin + travel * progress, track.h / 2.0, origin, travel)
-    }
+    let travel = (track.w - track.h).max(1.0);
+    let origin = track.x + track.h / 2.0;
+    (origin + travel * progress, track.h / 2.0, origin, travel)
 }
 
 /// Swipe-to-confirm control in the thick-slider style; `progress` (0 to 1)
@@ -2085,30 +2120,10 @@ pub fn confirm(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, label: &str, dang
     let m = &t.m;
     let accent = if danger { t.pal.danger } else { t.pal.accent };
     let (x, w, h) = (m.margin, m.w as f32 - m.margin * 2.0, m.dp(56.0));
-    if t.style == UiStyle::MaterialExpressive {
-        let progress = progress.clamp(0.0, 1.0);
-        let radius = h / 2.0;
-        let track = Rect::new(x, top, w, h);
-        c.fill_round_rect(x, top, w, h, radius, if danger { t.pal.danger_soft } else { t.pal.track });
-        let (hx, _, _, _) = confirm_handle(t, track, progress);
-        let press = t.motion.handle.clamp(0.0, 1.0);
-        // SukiSU's expressive handle is 4×44 and narrows to half while held.
-        let handle_w = m.dp(4.0) * (1.0 - 0.5 * press);
-        let handle_h = m.dp(44.0);
-        if progress > 0.0 {
-            c.fill_round_rect(x, top, (hx - x).clamp(0.0, w), h, radius, accent.with_alpha(70));
-        }
-        c.text_center_in(&f.heading, label, x + w / 2.0, top + h / 2.0, m.row_title_px, accent, w - m.dp(48.0));
-        if press > 0.01 {
-            c.fill_round_rect(hx - m.dp(10.0), top, m.dp(20.0), h, m.dp(10.0), accent.with_alpha((26.0 * press) as u8));
-        }
-        c.fill_round_rect(hx - handle_w / 2.0, top + (h - handle_h) / 2.0, handle_w, handle_h, handle_w / 2.0, accent);
-        return track;
-    }
     c.fill_round_rect(x, top, w, h, h / 2.0, if danger { t.pal.danger_soft } else { t.pal.badge });
     // The label stands between the knob at rest and the track's end.
     c.text_center_in(&f.heading, label, x + w / 2.0 + h / 4.0, top + h / 2.0, m.row_title_px, accent, w - h * 2.0);
-    let k = h - m.dp(8.0);
+    let k = (h - m.dp(8.0)) * (1.0 - 0.08 * t.motion.handle.clamp(0.0, 1.0));
     let kcx = x + h / 2.0 + (w - h) * progress.clamp(0.0, 1.0);
     let kcy = top + h / 2.0;
     if progress > 0.0 {
@@ -2218,6 +2233,7 @@ pub fn keypad_height(t: &Theme) -> f32 {
 /// of three round keys, `pressed` drawn held down, and the last row erasing
 /// and confirming, in `l`. Returns where each key answers a touch.
 pub fn keypad(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32, pressed: Option<Cap>) -> Vec<(Rect, Cap)> {
+    c.keyboard_top = Some(top.floor().max(0.0) as u32);
     let m = &t.m;
     let (size, gx, gy) = (m.dp(PAD_KEY_DP), m.dp(PAD_GAP_X_DP), m.dp(PAD_GAP_Y_DP));
     let left = (m.w as f32 - (3.0 * size + 2.0 * gx)) / 2.0;
@@ -2237,8 +2253,10 @@ pub fn keypad(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32, pressed: 
             _ if bare => t.pal.bg,
             _ => t.pal.card,
         };
-        let amount = if pressed == Some(cap) {
-            if t.style == UiStyle::MaterialExpressive { t.motion.key.clamp(0.0, 1.0) } else { 1.0 }
+        let amount = if t.motion.moving_keys && pressed == Some(cap) {
+            t.motion.key.clamp(0.0, 1.0)
+        } else if pressed == Some(cap) {
+            1.0
         } else {
             0.0
         };
@@ -2893,7 +2911,10 @@ fn system_card(c: &mut Canvas, t: &Theme, f: &Fonts, r: Rect, card: &SystemCard)
 /// white tick on the one chosen, an empty ring on the others.
 pub fn check_circle(c: &mut Canvas, t: &Theme, cx: f32, cy: f32, on: bool) {
     let m = &t.m;
-    let pop = if t.motion.check.w > 0.0 && t.motion.check.contains(cx, cy) { t.motion.check_pop.clamp(0.5, 1.15) } else { 1.0 };
+    let key = crate::theme::ControlId::Check(cx.round() as i32, cy.round() as i32);
+    c.controls.push((key, on));
+    let pop = t.motion.controls.iter().find(|(id, _)| *id == key)
+        .map_or(1.0, |(_, pos)| 0.6 + 0.4 * pos);
     let d = m.dp(24.0) * if on { pop } else { 1.0 };
     let ink = if t.style == UiStyle::MaterialExpressive { t.pal.on_accent } else { Rgba::rgb(255, 255, 255) };
     if on {
@@ -2987,6 +3008,7 @@ pub fn keyboard_height(t: &Theme) -> f32 {
 /// neighbours.
 #[allow(clippy::too_many_arguments)]
 pub fn keyboard(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32, layer: Layer, pressed: Option<Cap>, enter: &str) -> Vec<(Rect, Cap)> {
+    c.keyboard_top = Some(top.floor().max(0.0) as u32);
     let m = &t.m;
     let w = m.w as f32;
     let material = t.style == UiStyle::MaterialExpressive;
@@ -3048,8 +3070,10 @@ pub fn keyboard(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32, layer: 
     let radius = if t.style == UiStyle::MaterialExpressive { m.dp(16.0).min(kh / 2.0) } else { m.dp(KEY_RADIUS_DP) };
     let glyph_px = m.dp(21.0);
     for &(r, cap) in &keys {
-        let amount = if pressed == Some(cap) {
-            if t.style == UiStyle::MaterialExpressive { t.motion.key.clamp(0.0, 1.0) } else { 1.0 }
+        let amount = if t.motion.moving_keys && pressed == Some(cap) {
+            t.motion.key.clamp(0.0, 1.0)
+        } else if pressed == Some(cap) {
+            1.0
         } else {
             0.0
         };
@@ -3648,10 +3672,9 @@ mod tests {
     #[test]
     fn an_expressive_switch_thumb_travels_between_its_ends() {
         let mut t = Theme::for_style(400, 80, 2.0, false, UiStyle::MaterialExpressive);
-        t.motion.switch_cy = 40.0;
         let thumb_at = |pos: f32, color: Rgba| {
-            let mut theme = t;
-            theme.motion.switch_pos = pos;
+            let mut theme = t.clone();
+            theme.motion.controls = vec![(crate::theme::ControlId::Switch(360, 40), pos)];
             let mut c = Canvas::filled(400, 80, theme.pal.bg);
             switch(&mut c, &theme, 360.0, 40.0, pos >= 1.0);
             let y = 40 * c.w as usize * 4;
@@ -3660,18 +3683,66 @@ mod tests {
                 c.data[i] == color.r && c.data[i + 1] == color.g && c.data[i + 2] == color.b
             })
         };
-        let off = thumb_at(0.0, t.pal.chevron).expect("off thumb");
+        let off = thumb_at(0.0, t.pal.outline).expect("off thumb");
         let on = thumb_at(1.0, t.pal.on_accent).expect("on thumb");
         assert!(off < on, "thumb travels from {off} to {on}");
-        t.motion.pose = true;
+        // The track it is off on is outlined.
+        let mut c = Canvas::filled(400, 80, t.pal.bg);
+        t.motion.controls = vec![(crate::theme::ControlId::Switch(360, 40), 0.0)];
+        switch(&mut c, &t, 360.0, 40.0, true);
+        let edge = (0..400).any(|x| {
+            let i = 40 * c.w as usize * 4 + x * 4;
+            c.data[i] == t.pal.outline.r && c.data[i + 1] == t.pal.outline.g
+        });
+        assert!(edge, "an off switch is outlined");
+        t.motion.controls = vec![(crate::theme::ControlId::Switch(360, 40), 1.0)];
+        t.motion.switch_press_cy = 40.0;
+        t.motion.switch_press = 1.0;
         let mut held = Canvas::filled(400, 80, t.pal.bg);
         switch(&mut held, &t, 360.0, 40.0, true);
-        t.motion.pose = false;
+        t.motion.switch_press = 0.0;
         let mut rest = Canvas::filled(400, 80, t.pal.bg);
         switch(&mut rest, &t, 360.0, 40.0, true);
         let y = 40 * held.w as usize * 4;
         let span = |c: &Canvas| (0..400).filter(|&x| c.data[y + x * 4] == t.pal.on_accent.r).count();
         assert!(span(&held) > span(&rest), "a held thumb is wider");
+    }
+
+    #[test]
+    fn an_expressive_slider_keeps_its_track_clear_of_its_handle() {
+        let t = Theme::for_style(600, 200, 2.0, false, UiStyle::MaterialExpressive);
+        let (x, w, top) = (40.0, 480.0, 60.0);
+        let handle = x + w * 0.5;
+        let gap = t.m.dp(6.0) + t.m.slider_knob / 2.0;
+        let row = (top + t.m.slider_h / 2.0) as u32;
+        let draw = |handle_press: f32| {
+            let mut theme = t.clone();
+            theme.motion.handle = handle_press;
+            let mut c = Canvas::filled(600, 200, theme.pal.bg);
+            slider(&mut c, &theme, x, top, w, 0.5);
+            c
+        };
+        let c = draw(0.0);
+        let ink = |x: f32| c.data[((row * c.w + x as u32) * 4) as usize];
+        // The track's inside ends stop short of the handle on both sides,
+        // so neither runs under it as it travels.
+        assert_eq!(ink(handle - gap + 2.0), t.pal.bg.r, "no active track runs up to the handle");
+        assert_eq!(ink(handle - gap - 2.0), t.pal.accent.r, "the active track stops at the gap");
+        assert_eq!(ink(handle + gap - 2.0), t.pal.bg.r, "nor the inactive one");
+        assert_eq!(ink(handle + gap + 2.0), t.pal.track.r, "the inactive track starts past it");
+        // A stop marks the far end of the track in its own ink.
+        assert_eq!(ink(x + w - t.m.dp(8.0)), t.pal.stop.r, "the stop is drawn at the track's end");
+        // Held, the handle narrows to half its width. It stands clear of the
+        // track above it, where only the handle is drawn.
+        let held = draw(1.0);
+        let above_track = (top + 4.0) as u32 * 600;
+        let span = |c: &Canvas| {
+            (0..600u32).filter(|&x| {
+                let i = (above_track + x) as usize * 4;
+                c.data[i] == t.pal.accent.r && c.data[i + 1] == t.pal.accent.g
+            }).count()
+        };
+        assert!((span(&c) as i32 - 2 * span(&held) as i32).abs() <= 2, "a held handle is half as wide: {} then {}", span(&c), span(&held));
     }
 
     #[test]
@@ -3687,7 +3758,7 @@ mod tests {
         let mut art = Canvas::filled(400, 200, t.pal.bg);
         confirm(&mut art, &t, &crate::font::bundled(), 40.0, "Flash", false, progress);
         let x = moved.round() as u32;
-        let y = (track.y + track.h / 2.0) as u32;
+        let y = (track.y + track.h / 2.0 + t.m.dp(10.0)) as u32;
         let i = (y * art.w + x) as usize * 4;
         assert_eq!(art.data[i], t.pal.accent.r, "the drawn pill is on that center");
     }

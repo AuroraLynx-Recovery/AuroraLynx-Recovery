@@ -36,7 +36,15 @@ impl Spring {
 /// after `ms`. `damping` is the ratio: 1 is critical, 0.5 is medium bouncy,
 /// the same pair SukiSU uses for cards, switches and slider handles.
 pub fn compose(ms: u64, from: f32, to: f32, damping: f32) -> (f32, bool) {
-    let omega = 400.0_f32.sqrt();
+    compose_with(ms, from, to, 400.0, damping)
+}
+
+/// Where a spring of Compose `stiffness` (of a mass of one) sits between
+/// `from` and `to` after `ms`, `damping` being the ratio: 1 is critical, 0.5
+/// medium bouncy. The back gesture lets its progress go back on one of
+/// stiffness 1500.
+pub fn compose_with(ms: u64, from: f32, to: f32, stiffness: f32, damping: f32) -> (f32, bool) {
+    let omega = stiffness.max(1.0).sqrt();
     let t = ms as f32 / 1000.0;
     let u0 = from - to;
     let (u, velocity) = if damping >= 0.999 {
@@ -49,6 +57,37 @@ pub fn compose(ms: u64, from: f32, to: f32, damping: f32) -> (f32, bool) {
     };
     let settled = (u.abs() < 0.004 * (1.0 + (to - from).abs()) && velocity.abs() < 0.04 * (1.0 + (to - from).abs())) || t > 1.4;
     (to + u, settled)
+}
+
+/// A cubic Bézier from (0, 0) to (1, 1) with control points (`x1`, `y1`)
+/// and (`x2`, `y2`), read at `x`: how far along it a value `x` of the way
+/// is.
+pub fn bezier(x: f32, x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    let across = |t: f32| 3.0 * (1.0 - t) * (1.0 - t) * t * x1 + 3.0 * (1.0 - t) * t * t * x2 + t * t * t;
+    let (mut lo, mut hi) = (0.0, 1.0);
+    let mut t = x;
+    for _ in 0..16 {
+        t = (lo + hi) / 2.0;
+        if across(t) < x {
+            lo = t;
+        } else {
+            hi = t;
+        }
+    }
+    3.0 * (1.0 - t) * (1.0 - t) * t * y1 + 3.0 * (1.0 - t) * t * t * y2 + t * t * t
+}
+
+/// The Android back gesture's curve, (0.1, 0.1, 0, 1): the page leaves at
+/// the finger's pace and slows as it goes.
+pub fn back_gesture(x: f32) -> f32 {
+    bezier(x, 0.1, 0.1, 0.0, 1.0)
+}
+
+/// Material 3's emphasized decelerate, (0.05, 0.7, 0.1, 1): what a back
+/// gesture runs on once it is taken.
+pub fn emphasized(x: f32) -> f32 {
+    bezier(x, 0.05, 0.7, 0.1, 1.0)
 }
 
 pub fn settle(ms: u64, period: f32) -> f32 {

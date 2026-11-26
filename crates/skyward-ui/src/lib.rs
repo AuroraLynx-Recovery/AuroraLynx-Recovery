@@ -23,6 +23,7 @@ pub mod sprite;
 pub mod surface;
 pub mod term;
 pub mod vncview;
+pub mod zt;
 pub(crate) mod texts;
 pub mod theme;
 pub mod widgets;

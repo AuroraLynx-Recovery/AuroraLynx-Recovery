@@ -127,7 +127,7 @@ impl App {
     /// A page sliding over another comes to rest at once.
     pub(super) fn end_turn(&mut self) {
         if let Some(turn) = self.turn.take() {
-            self.backdrop = Some(turn.left);
+            self.keep_turn(turn);
             self.dirty = true;
         }
     }
@@ -210,13 +210,13 @@ mod tests {
         assert!(!app.keys, "volume down waits for the power key first");
         assert!(app.tick(CHORD_MS).is_empty());
         assert!(app.keys, "then lights a control on its own");
-        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::Search))));
+        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::Update))));
         assert!(app.key(Key::Power, CHORD_MS + 10).is_empty(), "the power key came too late");
         assert!(app.key_up(Key::VolumeDown, CHORD_MS + 20).is_empty());
         assert!(app.tick(CHORD_MS * 2 + 10).is_empty());
         assert_eq!(app.screen(), Screen::Home, "the power key waits on the control lit until it comes up");
         app.key_up(Key::Power, CHORD_MS * 3);
-        assert_eq!(app.screen(), Screen::Search, "and then works it");
+        assert_eq!(app.screen(), Screen::Update, "and then works it");
     }
 
     #[test]
@@ -287,7 +287,7 @@ mod tests {
         app.tick(0);
         app.tick(DIMS);
         assert_eq!(app.panel(DIMS + 500), Some(dim_level(SLIDER_START)));
-        let (x, y) = spot(&mut app, &f, &i, Action::Open(Screen::Settings));
+        let (x, y) = spot(&mut app, &f, &i, Action::SelectTab(Screen::Settings));
         app.touch(Touch::Down(x, y), &f, DIMS + 600);
         app.touch(Touch::Up, &f, DIMS + 650);
         assert_eq!(app.screen(), Screen::Settings, "the tap counts");
@@ -299,7 +299,7 @@ mod tests {
     fn a_touch_on_the_dark_panel_lights_nothing() {
         let (f, i) = (fonts(), info());
         let mut app = App::new(Screen::Home, W, H, PPD);
-        let (x, y) = spot(&mut app, &f, &i, Action::Open(Screen::Settings));
+        let (x, y) = spot(&mut app, &f, &i, Action::SelectTab(Screen::Settings));
         press(&mut app, Key::Power, 0);
         assert!(app.touch(Touch::Down(x, y), &f, 100).is_empty());
         assert!(app.touch(Touch::Move(x, y - 300.0), &f, 120).is_empty());
@@ -309,7 +309,7 @@ mod tests {
         assert_eq!(app.top().1, 0.0, "nor scrolled the page");
         press(&mut app, Key::Power, 200);
         assert!(app.display_on());
-        tap_at(&mut app, &f, &i, Action::Open(Screen::Settings), 700);
+        tap_at(&mut app, &f, &i, Action::SelectTab(Screen::Settings), 700);
         assert_eq!(app.screen(), Screen::Settings, "a tap on the lit panel does");
     }
 
@@ -374,7 +374,7 @@ mod tests {
     fn a_touch_or_a_volume_key_sends_the_charging_screen_away_and_keeps_the_panel_lit() {
         let (f, i) = (fonts(), info());
         let mut app = App::new(Screen::Home, W, H, PPD);
-        let (x, y) = spot(&mut app, &f, &i, Action::Open(Screen::Settings));
+        let (x, y) = spot(&mut app, &f, &i, Action::SelectTab(Screen::Settings));
         app.tick(0);
         press(&mut app, Key::Power, 0);
         app.tick(365);

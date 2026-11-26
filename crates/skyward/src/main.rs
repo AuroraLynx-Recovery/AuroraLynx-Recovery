@@ -57,6 +57,8 @@ mod waveform;
 mod wipe;
 #[cfg(target_os = "android")]
 mod wlan;
+#[cfg(target_os = "android")]
+mod mobile;
 
 #[derive(Parser)]
 #[command(name = "skyward", version, about = "AuroraLynx recovery")]

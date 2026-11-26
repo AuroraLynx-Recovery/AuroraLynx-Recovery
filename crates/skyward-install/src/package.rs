@@ -83,12 +83,17 @@ impl Metadata {
 pub fn identify<R: Read + Seek>(mut file: R) -> Result<Package> {
     let mut head = Vec::with_capacity(ZIP_MAGIC.len());
     (&mut file).take(ZIP_MAGIC.len() as u64).read_to_end(&mut head).context("read the package's first bytes")?;
-    if head != ZIP_MAGIC {
-        let len = file.seek(SeekFrom::End(0)).context("find the package's size")?;
-        return image::open(&mut file, len).map(Package::Image);
-    }
+    let zip_header = [ZIP_MAGIC, b"PK\x05\x06", b"PK\x07\x08"].contains(&head.as_slice());
     file.seek(SeekFrom::Start(0)).context("rewind the package")?;
-    let mut zip = ZipArchive::new(file).context("read the zip directory")?;
+    let mut zip = match ZipArchive::new(&mut file) {
+        Ok(zip) => zip,
+        Err(err) if zip_header => return Err(err).context("read the zip directory"),
+        Err(zip::result::ZipError::InvalidArchive(_)) => {
+            let len = file.seek(SeekFrom::End(0)).context("find the package's size")?;
+            return image::open(&mut file, len).map(Package::Image);
+        }
+        Err(err) => return Err(err).context("identify the package"),
+    };
     if zip.index_for_name(PAYLOAD).is_some() {
         return update(&mut zip).map(Package::Update);
     }
@@ -323,7 +328,11 @@ METADATA_SIZE=1024
         ]);
         assert!(identify(Cursor::new(squeezed)).is_err());
         let other = zip_with(&[("readme.txt", b"hello", CompressionMethod::Stored)]);
-        assert_eq!(identify(Cursor::new(other)).unwrap(), Package::Unknown);
+        assert_eq!(identify(Cursor::new(other.clone())).unwrap(), Package::Unknown);
+        let mut prefixed = b"not image data".to_vec();
+        prefixed.extend(other);
+        assert_eq!(identify(Cursor::new(prefixed)).unwrap(), Package::Unknown);
+        assert_eq!(identify(Cursor::new(zip_with(&[]))).unwrap(), Package::Unknown);
         let text = Image { kind: image::ImageKind::Other, layout: image::Layout::whole(14) };
         assert_eq!(identify(Cursor::new(b"just some text".to_vec())).unwrap(), Package::Image(text), "no zip, and nothing an image is known by");
         assert_eq!(identify(Cursor::new(Vec::new())).unwrap(), Package::Image(Image { kind: image::ImageKind::Other, layout: image::Layout::whole(0) }));

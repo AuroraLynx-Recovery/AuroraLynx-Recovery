@@ -130,11 +130,19 @@ pub struct Choice {
     /// The partitions it can go to, the likeliest first.
     pub partitions: Vec<FlashTarget>,
     /// Which of them is chosen.
-    pub partition: usize,
+    pub partition: Option<usize>,
     pub pick: Pick,
 }
 
 impl App {
+    pub(super) fn script_has_keys(&self) -> bool {
+        self.state.module_zip_busy || matches!(self.state.install, Install::Scripting { running: true, .. })
+    }
+
+    pub fn module_install_log(&mut self, line: String) {
+        record_log(&mut self.state.module_zip_output, line);
+    }
+
     /// The system asked for the package at `name` to be installed before
     /// the recovery started: the installing page opens over the home page,
     /// looking for it. `security` for a security update.
@@ -241,20 +249,29 @@ impl App {
                 }
             }
             Event::Image { kind, size, partitions } => {
-                *install = Install::Choosing(Choice { kind, size, partitions, partition: 0, pick: Pick::Current })
+                let named = self.state.package_name.as_deref().map(skyward_install::image::named);
+                let partition = partitions.first().filter(|first| match kind {
+                    ImageKind::Other => named == Some(first.name.as_str()),
+                    ImageKind::Filesystem(_) => named == Some(first.name.as_str()) || first.place == FlashPlace::Logical,
+                    ImageKind::Super => first.name == "super",
+                    _ => kind.partitions().contains(&first.name.as_str()),
+                }).map(|_| 0);
+                *install = Install::Choosing(Choice { kind, size, partitions, partition, pick: Pick::Current })
             }
             Event::Script => *install = Install::ConfirmingScript,
             Event::System { name, version, sizes } => *install = Install::SystemChoosing(SystemChoice { name, version, sizes, size: 0 }),
             Event::Running => {
                 *install = Install::Scripting { stage: None, running: true };
-                self.state.script_output.clear();
+                self.drop_button();
+                self.chord = None;
+                if self.display_on {
+                    self.stir(now);
+                } else {
+                    self.wake(now);
+                }
             }
             Event::Print(line) => {
-                let shown = &mut self.state.script_output;
-                if shown.len() == SCRIPT_LINES {
-                    shown.remove(0);
-                }
-                shown.push(line);
+                record_log(&mut self.state.script_output, line);
             }
             Event::Progress(stage) => match install {
                 Install::Checking { stage: shown, .. }
@@ -317,6 +334,13 @@ impl App {
             }
         }
     }
+}
+
+fn record_log(log: &mut Vec<String>, line: String) {
+    if log.len() == SCRIPT_LINES {
+        log.remove(0);
+    }
+    log.push(line.chars().take(2048).collect());
 }
 
 #[cfg(test)]
@@ -425,6 +449,7 @@ mod tests {
         let mut partitions = slotted(&["modem"]);
         partitions.extend([logical("odm"), logical("vendor")]);
         let kind = ImageKind::Filesystem(skyward_install::Filesystem::Erofs);
+        app.state.package_name = Some("modem.img".into());
         app.install(Event::Image { kind, size: 1 << 30, partitions }, 0);
         // The partition its file is named for comes first, and the phone
         // has it in both slots, which are there to pick.
@@ -433,7 +458,7 @@ mod tests {
         tap_at(&mut app, &f, &i, Action::FlashSlots(Pick::Both), 1000);
         tap_at(&mut app, &f, &i, Action::FlashPartition(2), 1000);
         assert_eq!(picks(&mut app), 0, "a logical partition is the running slot's, with nothing to pick");
-        assert_eq!(swipe_to_flash(&mut app, &f, &i), vec![Effect::Flash { partition: "vendor".into(), place: FlashPlace::Logical, pick: Pick::Both }]);
+        assert_eq!(swipe_to_flash(&mut app, &f, &i), vec![Effect::Flash { partition: "vendor".into(), place: FlashPlace::Logical, pick: Pick::Current }]);
         assert_eq!(Pick::Both.slots(FlashPlace::Logical, Slot::B), [Slot::B], "whatever was picked for another partition");
         assert_eq!(Pick::Other.slots(FlashPlace::Slotted, Slot::B), [Slot::A]);
         assert!(Pick::Current.slots(FlashPlace::Single, Slot::A).is_empty(), "super is in no slot");
@@ -514,6 +539,11 @@ mod tests {
         assert_eq!(app.touch(Touch::Up, &f, 1000), vec![Effect::Install]);
         assert_eq!(app.state.install, Install::Scripting { stage: None, running: false });
         app.install(Event::Running, 1000);
+        for key in [Key::VolumeUp, Key::VolumeDown, Key::Power] {
+            assert!(app.key(key, 1000).is_empty());
+            assert!(app.key_up(key, 1000).is_empty());
+        }
+        assert!(app.display_on, "the installer's power key does not blank the screen");
         for line in ["- Flashing boot", " ", "- Done"] {
             app.install(Event::Print(line.into()), 1000);
         }

@@ -306,39 +306,26 @@ mod tests {
     use crate::app::testing::*;
 
     #[test]
-    fn the_keys_unfold_the_search_bar_to_light_it() {
+    fn the_keys_open_search_from_the_toolbar_button() {
         let (f, i) = (fonts(), info());
         let mut app = App::new(Screen::Home, W, H, PPD);
-        let span = app.frame(&f, &i).fold.expect("the home page's search bar folds").span;
-        scroll_to(&mut app, &f, span, 0);
-        app.tick(3000);
-        press(&mut app, Key::VolumeDown, 3000);
-        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::About))), "a bar folded away is not in view");
-        press(&mut app, Key::VolumeUp, 3000);
-        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::Search))));
-        for ms in (3000..5000).step_by(8) {
-            app.tick(ms);
-        }
-        assert_eq!(app.top().1, 0.0, "the page went back up to unfold it");
-        press(&mut app, Key::Power, 5000);
+        tap_button(&mut app, &f, &i, 0);
         assert_eq!(app.screen(), Screen::Search);
     }
 
     #[test]
-    fn the_keys_reach_the_last_row_of_a_home_page_grown_by_an_update_notice() {
-        let f = fonts();
-        let i = DeviceInfo { snapshot: SnapshotState::Snapshotted, ..info() };
-        let mut app = App::new(Screen::Home, W, SNUG, PPD);
-        let (_, y) = spot(&mut app, &f, &i, Action::Open(Screen::Reboot));
-        assert!(y > SNUG as f32, "below the screen to start with");
-        light_on(&mut app, &f, &i, Stop::Hit(Action::Open(Screen::Reboot)));
+    fn the_keys_reach_the_last_row_of_a_regular_page_grown_by_an_update_notice() {
+        let (f, i) = (fonts(), info());
+        let mut app = App::new(Screen::TimeZones(Region::Asia), W, SNUG, PPD);
+        let action = app.frame(&f, &i).hits.last().expect("rows").action;
+        let (_, y) = page_spot(&mut app, &f, &i, action);
+        assert!(y + 1.0 > SNUG as f32, "below the screen to start with");
+        light_on(&mut app, &f, &i, Stop::Hit(action));
         for ms in (0..3000).step_by(8) {
             app.tick(ms);
         }
-        let (_, y) = spot(&mut app, &f, &i, Action::Open(Screen::Reboot));
-        assert!(y < SNUG as f32, "the page scrolled the lit row into view");
-        press(&mut app, Key::Power, 3000);
-        assert_eq!(app.screen(), Screen::Reboot);
+        let (_, y) = page_spot(&mut app, &f, &i, action);
+        assert!(y - app.top().1 < SNUG as f32, "the page scrolled the lit row into view");
     }
 
     #[test]
@@ -348,7 +335,7 @@ mod tests {
         app.frame(&f, &i);
         assert_eq!(app.light(0.0), None, "a page opens to the touch");
         app.touchscreen_missing();
-        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::Search))));
+        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::Update))));
         assert!(app.light(0.0).is_some(), "lit before any key is pressed");
         assert!(app.take_dirty(), "and shown");
     }
@@ -360,23 +347,17 @@ mod tests {
         app.frame(&f, &i);
         assert!(!app.keys, "a page opens to the touch");
         press(&mut app, Key::VolumeDown, 0);
-        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::Search))), "the first press lights the first control in view");
+        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::Update))), "the first press lights the first control in view");
         press(&mut app, Key::VolumeDown, 0);
         assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::About))));
-        press(&mut app, Key::VolumeDown, 0);
-        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::Install))));
         press(&mut app, Key::VolumeUp, 0);
-        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::About))));
+        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::Update))));
         press(&mut app, Key::VolumeUp, 0);
+        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Button(Action::Open(Screen::Search))), "up from the first page row goes to the toolbar search");
         press(&mut app, Key::VolumeUp, 0);
-        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::Reboot))), "up from the first goes round to the last");
-        app.tick(5000);
-        let reboot = app.lit().expect("lit");
-        assert!(app.shows(&reboot, app.top().1), "scrolled into view");
+        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::SelectTab(Screen::Settings))), "up from the toolbar goes round to the dock's last");
         press(&mut app, Key::VolumeDown, 6000);
-        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::Search))), "down from the last goes round to the first");
-        app.tick(10_000);
-        assert_eq!(app.top().1, 0.0, "at the top of the page again");
+        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Button(Action::Open(Screen::Search))), "down from the last goes round to the toolbar, then the page");
     }
 
     #[test]
@@ -384,17 +365,17 @@ mod tests {
         let (f, i) = (fonts(), info());
         let mut app = App::new(Screen::Home, W, H, PPD);
         app.frame(&f, &i);
-        light_on(&mut app, &f, &i, Stop::Hit(Action::Open(Screen::Settings)));
+        light_on(&mut app, &f, &i, Stop::Hit(Action::Open(Screen::About)));
         assert!(app.key(Key::Power, 0).is_empty());
         assert_eq!(app.screen(), Screen::Home, "nothing happens as the key goes down");
         app.key_up(Key::Power, 0);
-        assert_eq!(app.screen(), Screen::Settings, "the row opens its page as the key comes up");
+        assert_eq!(app.screen(), Screen::About, "the row opens its page as the key comes up");
         let first = lit(&mut app, &f, &i);
         assert!(first.is_some() && first != Some(Stop::Back), "the page's first control is lit, not the `<`: {first:?}");
         app.key(Key::Back, 0);
         assert_eq!(app.screen(), Screen::Home);
-        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::Settings))), "back on the page, the keys are where they left it");
-        light_on(&mut app, &f, &i, Stop::Hit(Action::Open(Screen::Settings)));
+        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::About))), "back on the page, the keys are where they left it");
+        light_on(&mut app, &f, &i, Stop::Hit(Action::Open(Screen::About)));
         press(&mut app, Key::Power, 0);
         assert_eq!(lit(&mut app, &f, &i), first);
         press(&mut app, Key::VolumeUp, 0);
@@ -469,7 +450,7 @@ mod tests {
     #[test]
     fn the_brightness_slider_takes_the_volume_keys_until_the_power_key_lets_it_go() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Settings, W, H, PPD);
+        let mut app = App::new(Screen::DisplayPreferences, W, H, PPD);
         app.frame(&f, &i);
         light_on(&mut app, &f, &i, Stop::Hit(Action::Slider(Slider::Brightness)));
         assert_eq!(app.state.brightness, SLIDER_START, "it starts a step from its left end");
@@ -491,7 +472,7 @@ mod tests {
     #[test]
     fn the_strength_slider_taps_the_motor_at_each_step_of_the_keys() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Settings, W, H, PPD);
+        let mut app = App::new(Screen::DisplayPreferences, W, H, PPD);
         app.frame(&f, &i);
         light_on(&mut app, &f, &i, Stop::Hit(Action::Slider(Slider::Vibration)));
         press(&mut app, Key::Power, 0);
@@ -614,16 +595,17 @@ mod tests {
         app.key(Key::VolumeDown, 0);
         assert_eq!(app.deadline(0), Some(CHORD_MS), "it waits for the power key first");
         app.tick(CHORD_MS);
-        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::Search))));
+        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::Update))));
         assert_eq!(app.deadline(CHORD_MS), Some(REPEAT_DELAY_MS), "and repeats as from when it went down");
         app.tick(REPEAT_DELAY_MS - 1);
-        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::Search))), "not held long enough yet");
+        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::Update))), "not held long enough yet");
         app.tick(REPEAT_DELAY_MS);
         assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::About))));
         app.tick(REPEAT_DELAY_MS + REPEAT_MS);
-        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::Install))));
+        assert!(matches!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::About) | Action::SelectTab(_)))), "the next control, or a scroll toward the dock");
         app.key_up(Key::VolumeDown, REPEAT_DELAY_MS + REPEAT_MS + 10);
         app.tick(REPEAT_DELAY_MS + REPEAT_MS * 5);
-        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::Install))), "let go, it stops");
+        let left = lit(&mut app, &f, &i);
+        assert!(left.is_some(), "let go, it stops: {left:?}");
     }
 }

@@ -412,6 +412,19 @@ pub fn tile(c: &mut Canvas, t: &Theme, x: f32, y: f32, color: Rgba, icon: Icon) 
         let ink = if icon == Icon::Wipe { t.pal.danger } else { t.pal.text };
         glyph(c, icon, cx, cy, t.m.dp(21.0), ink);
     } else {
+        let color = if color == t.pal.accent {
+            use crate::pages::{BLUE, GREEN, ORANGE, PURPLE, RED, SLATE};
+            match icon {
+                Icon::Install | Icon::Restore => GREEN,
+                Icon::Backup | Icon::Layers | Icon::UsbDrive => PURPLE,
+                Icon::Power | Icon::Log | Icon::Clock => ORANGE,
+                Icon::Wipe => RED,
+                Icon::Gear | Icon::Terminal | Icon::Mount => SLATE,
+                _ => BLUE,
+            }
+        } else {
+            color
+        };
         draw(c, Art::Tile, cx, cy, s, color);
         glyph(c, icon, cx, cy, s, Rgba::rgb(255, 255, 255));
     }
@@ -457,6 +470,14 @@ fn draw(c: &mut Canvas, art: Art, cx: f32, cy: f32, size: f32, ink: Rgba) {
     }
     let cover = coverage(art, size);
     for y in y0..y1 {
+        let ink = if art == Art::Tile {
+            let height = ((y - top) as f32 / size).clamp(0.0, 1.0);
+            let light = crate::color::mix(ink, Rgba::rgb(255, 255, 255), 0.19);
+            let shade = crate::color::mix(ink, Rgba::rgb(0, 0, 0), 0.14);
+            crate::color::mix(light, shade, height)
+        } else {
+            ink
+        };
         for x in x0..x1 {
             let a = cover.alpha[((y - top) as u32 * cover.side + (x - left) as u32) as usize];
             if a > 0 {
@@ -623,6 +644,7 @@ mod tests {
         assert_eq!(px(1.0, 1.0), [0, 0, 0, 255], "its corners are clear");
         assert_eq!(px(1.0 + s / 2.0, 2.0)[2], 255, "the middle of its edge is the tile's");
         assert_eq!(px(1.0 + s / 2.0, 1.0 + s * 8.0 / BOX), [255, 255, 255, 255], "the glyph is white over it");
-        assert_eq!(px(1.0 + s / 2.0, 1.0 + s / 2.0)[2], 255, "and the tile shows through what is cut out of the glyph");
+        let [r, g, b, _] = px(1.0 + s / 2.0, 1.0 + s / 2.0);
+        assert!(b > 200 && b > r && b > g, "the shaded tile shows through the glyph's cutout");
     }
 }

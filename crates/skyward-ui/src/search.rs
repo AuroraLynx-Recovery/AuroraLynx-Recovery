@@ -47,6 +47,7 @@ const MOUNT: Text = page::MOUNT;
 
 pub const ENTRIES: &[Entry] = &[
     entry(page::WLAN, HOME, Screen::Wlan, keys::WLAN),
+    entry(page::MOBILE, HOME, Screen::Mobile, keys::MOBILE),
     entry(page::DUAL_BOOT, HOME, Screen::Systems, keys::DUAL_BOOT),
     entry(INSTALL, HOME, Screen::Install, keys::INSTALL),
     entry(texts::install::title::FROM_STORAGE, INSTALL, Screen::Install, keys::FROM_STORAGE),
@@ -61,6 +62,7 @@ pub const ENTRIES: &[Entry] = &[
     entry(page::TERMINAL, ADVANCED, Screen::Terminal, keys::TERMINAL),
     entry(page::VNC, ADVANCED, Screen::Vnc, keys::VNC),
     entry(page::AGENT, ADVANCED, Screen::Agent, keys::AGENT),
+    entry(page::ZEROTIER, ADVANCED, Screen::ZeroTier, keys::ZEROTIER),
     entry(page::RELABEL, ADVANCED, Screen::Relabel, keys::RELABEL),
     entry(page::FILESYSTEMS, ADVANCED, Screen::Filesystems, keys::FILESYSTEMS),
     entry(page::LOGS, ADVANCED, Screen::Logs, keys::LOGS),
@@ -170,6 +172,13 @@ mod tests {
         assert_eq!(find_on("wlan", Lang::Hans, |_| true).iter().map(|e| Lang::Hans.pick(e.title)).collect::<Vec<_>>(), ["WLAN"]);
         assert!(find_on("wlan", Lang::Hans, |s| s != Screen::Wlan).is_empty());
         assert_eq!(titles("xiazai"), ["系统更新", "AuroraLynx 更新"]);
+    }
+
+    #[test]
+    fn mobile_data_is_found_where_the_phone_has_it() {
+        assert_eq!(find("cellular", Lang::En).iter().map(|e| Lang::En.pick(e.title)).collect::<Vec<_>>(), ["Mobile data"]);
+        assert!(find_on("yidongwangluo", Lang::Hans, |s| s != Screen::Mobile).is_empty());
+        assert!(!find_on("yidongwangluo", Lang::Hans, |_| true).is_empty());
     }
 
     #[test]

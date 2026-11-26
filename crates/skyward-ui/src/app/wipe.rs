@@ -251,6 +251,7 @@ mod tests {
         assert_eq!(app.state.data, Data::Locked { user: 0, keys: Keys::Digits, checking: false }, "the partition stays as it was");
         assert_eq!(tap_at(&mut app, &f, &i, Action::Dismiss, 1000), vec![Effect::Dismiss]);
         assert_eq!(app.screen(), Screen::Home);
+        tap_at(&mut app, &f, &i, Action::SelectTab(Screen::Regular), 1000);
         assert_eq!(tap_at(&mut app, &f, &i, Action::Open(Screen::Decrypt), 1000), Vec::new(), "the screen lock is asked for at once");
         assert_eq!(app.screen(), Screen::Decrypt);
     }
@@ -264,6 +265,7 @@ mod tests {
         app.erase_ended(Ok(()), 0);
         assert_eq!(app.state.data, Data::Erased);
         assert_eq!(tap_at(&mut app, &f, &i, Action::Dismiss, 1000), vec![Effect::Dismiss]);
+        tap_at(&mut app, &f, &i, Action::SelectTab(Screen::Regular), 1000);
         assert!(tap_at(&mut app, &f, &i, Action::Open(Screen::Decrypt), 1000).is_empty(), "nothing opens until the system makes it afresh");
         assert_eq!(app.screen(), Screen::Decrypt);
     }

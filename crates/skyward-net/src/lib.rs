@@ -1,4 +1,5 @@
 pub mod dhcp;
+pub mod mobile;
 pub mod dns;
 pub mod download;
 pub mod github;

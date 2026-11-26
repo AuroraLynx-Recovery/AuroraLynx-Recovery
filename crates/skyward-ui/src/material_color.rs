@@ -81,6 +81,7 @@ pub(crate) fn palette(seed: u32, dark: bool, base: Palette) -> Palette {
         chevron: ink(colors.outline()),
         outline: ink(colors.outline()),
         track: ink(colors.secondary_container()),
+        stop: ink(colors.on_secondary_container()),
         switch_off: ink(colors.surface_container_high()),
         search: ink(colors.surface_container_highest()),
         search_icon: variant,

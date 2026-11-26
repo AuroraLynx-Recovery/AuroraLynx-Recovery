@@ -52,7 +52,7 @@ mod tests {
     #[test]
     fn home_opens_the_mount_page() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Home, W, H, PPD);
+        let mut app = App::new(Screen::Advanced, W, H, PPD);
         assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Mount)), vec![Effect::ReadMounts], "the page shows the partitions as they are now");
         assert_eq!(app.screen(), Screen::Mount);
     }
@@ -126,7 +126,7 @@ mod tests {
         assert_eq!(app.state.mount_failure, None, "trying again clears it");
         app.mount_failed(failure);
         app.key(Key::Back, 0);
-        assert_eq!(app.screen(), Screen::Home);
+        assert_eq!(app.screen(), Screen::Advanced);
         assert_eq!(app.state.mount_failure, None, "leaving the page clears it");
     }
 

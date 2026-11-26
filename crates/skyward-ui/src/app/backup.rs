@@ -262,7 +262,7 @@ mod tests {
     #[test]
     fn backups_found_are_listed_newest_first_and_those_unread_last() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Home, W, H, PPD);
+        let mut app = App::new(Screen::Regular, W, H, PPD);
         assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Restore)), vec![Effect::FindBackups { storage: false, usb: false }]);
         let unread = BackupEntry { place: Place::Storage, name: "20261021-150000".into(), held: Err("read backup.toml: not found".into()) };
         let (old, new) = (found(Place::UsbDrive, 1_792_000_000, [true; 5]), found(Place::Storage, 1_792_348_260, [true; 5]));
@@ -386,7 +386,7 @@ mod tests {
     #[test]
     fn a_backup_on_a_drive_pulled_out_leaves_its_page() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Home, W, H, PPD);
+        let mut app = App::new(Screen::Regular, W, H, PPD);
         app.set_usb_drive(Some(UsbDrive::Shown));
         assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Restore)), vec![Effect::FindBackups { storage: false, usb: true }]);
         app.set_backups(vec![found(Place::UsbDrive, 1_792_348_260, [true; 5])]);

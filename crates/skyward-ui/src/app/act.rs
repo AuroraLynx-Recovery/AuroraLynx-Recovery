@@ -133,7 +133,7 @@ impl App {
             }
             Action::ResetAppearance => return vec![Effect::ResetAppearance],
             Action::RemoveWallpaper => return vec![Effect::RemoveWallpaper],
-            Action::SelectTab(screen) => self.select_tab(screen, now),
+            Action::SelectTab(screen) => return self.select_tab(screen, now),
             // The switch moves at once; the runtime then tells how the WLAN
             // came up, or went off.
             Action::Toggle(Switch::Wlan) => {
@@ -142,6 +142,13 @@ impl App {
                 *w = Wlan { power: if on { Power::Starting } else { Power::Off }, ..Wlan::default() };
                 self.refresh();
                 return vec![Effect::Wlan(on)];
+            }
+            Action::Toggle(Switch::Mobile) => {
+                let m = self.state.mobile.as_mut().expect("the mobile switch shows on a phone whose radio is brought up");
+                let on = matches!(m.power, Power::Off | Power::Failed(_));
+                *m = skyward_net::mobile::Mobile { power: if on { Power::Starting } else { Power::Off }, ..skyward_net::mobile::Mobile::default() };
+                self.refresh();
+                return vec![Effect::Mobile(on)];
             }
             // The zone the system's gave the clock stays as the one chosen,
             // where it is one the pages list.
@@ -164,7 +171,7 @@ impl App {
                     Switch::KeepRecovery => &mut self.state.keep_recovery,
                     Switch::ShowPassword => &mut self.state.show_password,
                     Switch::ReduceMotion => &mut self.state.appearance.reduce_motion,
-                    Switch::Wlan | Switch::SystemTimeZone => unreachable!("the switch is turned above"),
+                    Switch::Wlan | Switch::Mobile | Switch::SystemTimeZone => unreachable!("the switch is turned above"),
                 };
                 *on = !*on;
                 let now_on = *on;
@@ -219,7 +226,11 @@ impl App {
             },
             Action::FlashPartition(k) => {
                 if let Install::Choosing(choice) = &mut self.state.install {
-                    choice.partition = k;
+                    if k >= choice.partitions.len() {
+                        return Vec::new();
+                    }
+                    choice.partition = Some(k);
+                    choice.pick = Pick::Current;
                     self.refresh();
                 }
             }
@@ -730,6 +741,27 @@ impl App {
                 self.refresh();
             }
             Action::AgentSend => return self.agent_send(),
+            Action::ZeroTierJoin => {
+                match crate::zt::Link::start(&self.state.zt_network) {
+                    Ok(link) => {
+                        self.state.zt_status = link.status();
+                        self.zt = Some(link);
+                        self.zt_seen = 0;
+                    }
+                    Err(why) => {
+                        self.state.zt_status.error = why;
+                        self.state.zt_status.state = "failed".into();
+                    }
+                }
+                self.refresh();
+            }
+            Action::ZeroTierLeave => {
+                if let Some(link) = self.zt.take() {
+                    link.stop();
+                }
+                self.state.zt_status = crate::zt::Status { state: "idle".into(), ..crate::zt::Status::default() };
+                self.refresh();
+            }
         }
         Vec::new()
     }
@@ -802,6 +834,7 @@ impl App {
                 1 => &mut self.state.vnc_password,
                 _ => &mut self.state.vnc_host,
             },
+            Screen::ZeroTier => &mut self.state.zt_network,
             Screen::Agent => match self.state.agent_field {
                 0 => &mut self.state.agent_url,
                 1 => &mut self.state.agent_model,
@@ -826,6 +859,12 @@ impl App {
                 {
                     return Vec::new();
                 }
+                if self.screen() == Screen::ZeroTier {
+                    let allowed = ch.is_ascii_alphanumeric() || ch == ':';
+                    if !allowed || self.state.zt_network.len() >= 384 {
+                        return Vec::new();
+                    }
+                }
                 let shifted = self.state.layer == Layer::Shifted;
                 self.typing().push(if shifted { ch.to_ascii_uppercase() } else { ch });
                 self.edits += 1;
@@ -834,7 +873,7 @@ impl App {
                 }
             }
             Cap::Space => {
-                if self.screen() == Screen::ManualColor {
+                if self.screen() == Screen::ManualColor || self.screen() == Screen::ZeroTier {
                     return Vec::new();
                 }
                 self.typing().push(' ');
@@ -849,6 +888,7 @@ impl App {
             }
             Cap::Show(layer) => self.state.layer = layer,
             Cap::Enter => match self.screen() {
+                Screen::ZeroTier => return self.act(Action::ZeroTierJoin, now),
                 Screen::Agent => return self.act(Action::AgentSend, now),
                 Screen::Vnc => return self.act(Action::VncConnect, now),
                 Screen::Search => {
@@ -907,6 +947,7 @@ impl App {
                     if path.starts_with('/') && let Some(manager) = self.state.module_manager {
                         self.state.module_zip_busy = true;
                         self.state.module_zip_result = None;
+                        self.state.module_zip_output.clear();
                         self.refresh();
                         return vec![Effect::InstallModuleZip { manager, path }];
                     }
@@ -1121,7 +1162,10 @@ impl App {
             }
             Confirm::Flash => {
                 if let Install::Choosing(choice) = &self.state.install {
-                    let FlashTarget { name, place } = choice.partitions[choice.partition].clone();
+                    let Some(target) = choice.partition.and_then(|index| choice.partitions.get(index)) else {
+                        return fx;
+                    };
+                    let FlashTarget { name, place } = target.clone();
                     fx.push(Effect::Flash { partition: name.clone(), place, pick: choice.pick });
                     self.state.install = Install::Flashing { partition: name, stage: None };
                     self.refresh();

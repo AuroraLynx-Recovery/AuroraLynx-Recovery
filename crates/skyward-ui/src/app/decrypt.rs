@@ -189,7 +189,7 @@ mod tests {
     #[test]
     fn the_decrypt_page_opens_the_partition_and_then_asks_with_the_users_own_control() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Home, W, H, PPD);
+        let mut app = App::new(Screen::Regular, W, H, PPD);
         assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Decrypt)), vec![Effect::OpenData], "no swipe first");
         assert_eq!(app.state.data, Data::Opening);
         assert!(!keys_shown(&mut app, &f, &i) && app.frame(&f, &i).pattern.is_none(), "nothing to answer yet");
@@ -208,7 +208,7 @@ mod tests {
         let (f, i) = (fonts(), info());
         let mut app = opened(Screen::Decrypt, &f, &i);
         tap(&mut app, &f, &i, Action::Skip);
-        assert_eq!((app.screen(), app.stack.len()), (Screen::Home, 1), "back on the home page, with no other behind it");
+        assert_eq!((app.screen(), app.stack.len()), (Screen::Regular, 1), "back on the tab it opened from");
         let mut first = App::new(Screen::Decrypt, W, H, PPD);
         first.arrive();
         tap(&mut first, &f, &i, Action::Skip);

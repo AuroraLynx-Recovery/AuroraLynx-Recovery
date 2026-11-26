@@ -159,7 +159,7 @@ pub struct Layout {
 pub fn layout(t: &Theme, f: &Fonts, top: f32) -> Layout {
     let m = &t.m;
     let px = m.dp(TEXT_DP);
-    let keys_top = m.h as f32 - widgets::keyboard_height(t) - m.dp(KEYS_GAP_DP + KEYS_H_DP);
+    let keys_top = t.m.h as f32 - widgets::keyboard_height(t) - m.dp(KEYS_GAP_DP + KEYS_H_DP);
     let card = Rect::new(m.margin, top, m.w as f32 - m.margin * 2.0, keys_top - m.dp(KEYS_GAP_DP) - top);
     let pad = m.dp(PAD_DP);
     let cell = cell_width(f, px);

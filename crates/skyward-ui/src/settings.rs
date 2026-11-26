@@ -65,6 +65,8 @@ pub struct Settings {
     pub agent_model: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub agent_key: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub zt_network: String,
     pub install: Install,
     pub backup: Backup,
     pub logs: Logs,
@@ -149,6 +151,7 @@ impl Settings {
             agent_url: state.agent_url.clone(),
             agent_model: state.agent_model.clone(),
             agent_key: state.agent_key.clone(),
+            zt_network: state.zt_network.clone(),
             install: Install { check_signature: state.check_signature, keep_recovery: state.keep_recovery },
             backup: Backup {
                 parts: names(&state.backup, &PARTS),
@@ -216,6 +219,7 @@ impl Settings {
         state.agent_url = self.agent_url.clone();
         state.agent_model = self.agent_model.clone();
         state.agent_key = self.agent_key.clone();
+        state.zt_network = self.zt_network.clone();
         state.check_signature = self.install.check_signature;
         state.keep_recovery = self.install.keep_recovery;
         state.backup = picked(&self.backup.parts, &PARTS);

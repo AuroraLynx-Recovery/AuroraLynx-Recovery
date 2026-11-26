@@ -80,6 +80,10 @@ pub struct DeviceConfig {
     /// The phone's WLAN, on phones whose driver the recovery brings up.
     #[serde(default)]
     pub wlan: Option<Wlan>,
+    /// Cellular data, filled from the product's radio modules and modem
+    /// helpers rather than a per-codename table.
+    #[serde(default)]
+    pub mobile: Option<Mobile>,
     /// Where the phone maker answers which system is the newest, on phones
     /// whose server the recovery knows.
     #[serde(default)]
@@ -137,6 +141,29 @@ pub struct Wlan {
     pub service: String,
     /// The page the stock system asks over plain HTTP to tell whether a
     /// network reaches the internet, which answers 204 with nothing.
+    pub probe: String,
+}
+
+/// What brings cellular data up inside a recovery: radio modules already
+/// listed by the product, and modem helpers the product installed on vendor
+/// or odm. No APN is chosen here; a call the modem already holds is reused.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Mobile {
+    /// Radio datapath modules from the product's `modules.load` lists.
+    #[serde(default)]
+    pub modules: Vec<String>,
+    /// Absolute paths of helpers the product installed, started in that order.
+    #[serde(default)]
+    pub helpers: Vec<String>,
+    /// Directories for their LD_LIBRARY_PATH, searched in order.
+    #[serde(default)]
+    pub libraries: Vec<String>,
+    /// Interface name prefixes, first match wins once `/sys/class/net` lists them.
+    #[serde(default)]
+    pub prefixes: Vec<String>,
+    /// The page the stock system asks over plain HTTP to tell whether a
+    /// network reaches the internet.
+    #[serde(default)]
     pub probe: String,
 }
 
@@ -608,6 +635,20 @@ impl DeviceConfig {
                 stock.recovery
             );
         }
+        if let Some(mobile) = &cfg.mobile {
+            if !mobile.probe.is_empty() {
+                ensure!(mobile.probe.starts_with("http://"), "[mobile] probe: {} is not a plain HTTP address", mobile.probe);
+            }
+            ensure!(!mobile.modules.is_empty() || !mobile.helpers.is_empty(), "[mobile] names no radio module or helper");
+            for helper in &mobile.helpers {
+                let path = Path::new(helper);
+                let plain = path.components().all(|c| matches!(c, std::path::Component::RootDir | std::path::Component::Normal(_)));
+                ensure!(path.is_absolute() && plain && path.file_name().is_some(), "[mobile] helpers: {helper} is not an absolute executable path");
+            }
+            for prefix in &mobile.prefixes {
+                ensure!(!prefix.is_empty() && !prefix.contains('/'), "[mobile] prefixes: {prefix} is not an interface name prefix");
+            }
+        }
         if let Some(wlan) = &cfg.wlan {
             ensure!(wlan.probe.starts_with("http://"), "[wlan] probe: {} is not a plain HTTP address", wlan.probe);
             for file in &wlan.firmware {
@@ -645,6 +686,19 @@ mod tests {
     }
 
     #[test]
+    fn parses_mobile_from_product_lists() {
+        let cfg = DeviceConfig::parse(
+            "[device]\ncodename = \"x\"\n[mobile]\nmodules = [\"rmnet_core\"]\nhelpers = [\"/vendor/bin/rmt_storage\"]\n",
+        )
+        .unwrap();
+        let mobile = cfg.mobile.expect("radio artifacts become a mobile table");
+        assert_eq!(mobile.modules, ["rmnet_core"]);
+        assert_eq!(mobile.helpers, ["/vendor/bin/rmt_storage"]);
+        assert!(DeviceConfig::parse("[device]\ncodename = \"x\"\n[mobile]\nhelpers = [\"rmt_storage\"]\n").is_err());
+        assert!(DeviceConfig::parse("[device]\ncodename = \"x\"\n[mobile]\nmodules = []\nhelpers = []\n").is_err());
+    }
+
+    #[test]
     fn parses_minimal() {
         let cfg = DeviceConfig::parse("[device]\ncodename = \"nezha\"\n").unwrap();
         assert_eq!(cfg.device.codename, "nezha");
@@ -652,7 +706,7 @@ mod tests {
         assert_eq!(cfg.device.os_version_prop, "ro.build.display.id");
         assert_eq!(cfg.modules.sources, default_module_sources());
         assert!(cfg.modules.load.is_empty());
-        assert_eq!((cfg.firmware, cfg.wlan, cfg.update), (None, None, None), "a phone may have none of them");
+        assert_eq!((cfg.firmware, cfg.wlan, cfg.mobile, cfg.update), (None, None, None, None), "a phone may have none of them");
         assert_eq!(cfg.logd, None, "a recovery's own logd usually has all it needs");
     }
 

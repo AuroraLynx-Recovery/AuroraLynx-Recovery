@@ -4,7 +4,7 @@
 //! segmented choice slides between its options.
 
 use super::*;
-use crate::theme::MotionCue;
+use crate::theme::{ControlId, MotionCue};
 
 #[derive(Clone, Copy)]
 struct Travel {
@@ -12,15 +12,16 @@ struct Travel {
     to: f32,
     start: u64,
     damping: f32,
+    stiffness: f32,
 }
 
 impl Travel {
     fn rest() -> Self {
-        Self { from: 0.0, to: 0.0, start: 0, damping: 1.0 }
+        Self { from: 0.0, to: 0.0, start: 0, damping: 1.0, stiffness: 400.0 }
     }
 
     fn at(self, now: u64) -> (f32, bool) {
-        motion::compose(now.saturating_sub(self.start), self.from, self.to, self.damping)
+        motion::compose_with(now.saturating_sub(self.start), self.from, self.to, self.stiffness, self.damping)
     }
 
     fn retarget(&mut self, to: f32, now: u64, damping: f32) {
@@ -28,25 +29,26 @@ impl Travel {
             return;
         }
         let from = self.at(now).0;
-        *self = Self { from, to, start: now, damping };
+        *self = Self { from, to, start: now, damping, ..*self };
+    }
+
+    /// Aim at `to` on a spring of `stiffness` and `damping`, as Material's
+    /// fast spatial springs move a pressed switch.
+    fn spring_to(&mut self, to: f32, now: u64, stiffness: f32, damping: f32) {
+        let from = self.at(now).0;
+        *self = Self { from, to, start: now, damping, stiffness };
     }
 
     fn jump(&mut self, to: f32, now: u64) {
-        *self = Self { from: to, to, start: now, damping: 1.0 };
+        *self = Self { from: to, to, start: now, damping: 1.0, stiffness: 400.0 };
     }
 }
 
 #[derive(Clone, Copy)]
-struct SwitchAnim {
-    cy: f32,
+struct ControlAnim {
+    key: ControlId,
     from: f32,
     to: f32,
-    start: u64,
-}
-
-#[derive(Clone, Copy)]
-struct CheckAnim {
-    row: Rect,
     start: u64,
 }
 
@@ -58,14 +60,17 @@ struct SegmentAnim {
     start: u64,
 }
 
-#[derive(Clone, Copy)]
 pub(super) struct Expressive {
     now: u64,
+    active: bool,
     handle: Travel,
     key: Travel,
     icon: Travel,
-    switch: Option<SwitchAnim>,
-    check: Option<CheckAnim>,
+    press: Travel,
+    press_cy: f32,
+    controls: Vec<ControlAnim>,
+    settled_controls: Vec<(ControlId, bool)>,
+    control_screen: Option<Screen>,
     segment: Option<SegmentAnim>,
     /// The icon button whose spring is running, kept after the finger lifts.
     icon_action: Option<Action>,
@@ -75,11 +80,15 @@ impl Expressive {
     pub(super) fn new() -> Self {
         Self {
             now: 0,
+            active: false,
             handle: Travel::rest(),
             key: Travel::rest(),
             icon: Travel::rest(),
-            switch: None,
-            check: None,
+            press: Travel::rest(),
+            press_cy: 0.0,
+            controls: Vec::new(),
+            settled_controls: Vec::new(),
+            control_screen: None,
             segment: None,
             icon_action: None,
         }
@@ -87,35 +96,38 @@ impl Expressive {
 
     /// Move the springs toward what is held. A page has to be drawn again
     /// while a control's own pixels are still changing.
-    pub(super) fn advance(&mut self, now: u64, active: bool, key_down: bool, icon_down: bool, handle_down: bool) -> bool {
+    pub(super) fn advance(&mut self, now: u64, active: bool, key_down: bool, icon_down: bool, handle_down: bool, switch_down: Option<f32>) -> bool {
         self.now = now;
+        self.active = active;
+        if let Some(cy) = switch_down {
+            self.press_cy = cy;
+        }
         if !active {
             self.handle.jump(0.0, now);
             self.key.jump(0.0, now);
             self.icon.jump(0.0, now);
-            self.switch = None;
-            self.check = None;
+            self.press.jump(0.0, now);
+            self.controls.clear();
             self.segment = None;
             return false;
         }
-        self.handle.retarget(if handle_down { 1.0 } else { 0.0 }, now, 1.0);
+        // The handle narrows in about 100 ms, as the expressive slider's does.
+        self.handle.spring_to(if handle_down { 1.0 } else { 0.0 }, now, 1600.0, 1.0);
         self.key.retarget(if key_down { 1.0 } else { 0.0 }, now, 0.5);
         self.icon.retarget(if icon_down { 1.0 } else { 0.0 }, now, 0.5);
-        if self.switch.is_some_and(|sw| motion::compose(now.saturating_sub(sw.start), sw.from, sw.to, 0.5).1) {
-            self.switch = None;
-        }
-        if self.check.is_some_and(|check| motion::compose(now.saturating_sub(check.start), 0.6, 1.0, 0.5).1) {
-            self.check = None;
-        }
+        // A switch's thumb grows on Material's fast spatial spring.
+        self.press.spring_to(if switch_down.is_some() { 1.0 } else { 0.0 }, now, 800.0, 0.6);
+        let had_controls = !self.controls.is_empty();
+        self.controls.retain(|sw| !motion::compose_with(now.saturating_sub(sw.start), sw.from, sw.to, 800.0, 0.6).1);
         if self.segment.is_some_and(|seg| motion::compose(now.saturating_sub(seg.start), 0.0, 1.0, 0.75).1) {
             self.segment = None;
         }
-        self.content_live(now)
+        had_controls || self.content_live(now)
     }
 
     pub(super) fn content_live(&self, now: u64) -> bool {
-        self.switch.is_some()
-            || self.check.is_some()
+        !self.press.at(now).1
+            || !self.controls.is_empty()
             || self.segment.is_some()
             || !self.handle.at(now).1
             || !self.key.at(now).1
@@ -137,18 +149,41 @@ impl Expressive {
         }
     }
 
+    /// Observe the actual shared switch and check renderers after a page updates.
+    /// This covers controls whose values arrive asynchronously as well as taps.
+    pub(super) fn observe_controls(&mut self, screen: Screen, controls: &[(ControlId, bool)], animate: bool) -> bool {
+        let mut changed = false;
+        if self.control_screen != Some(screen) || !animate {
+            self.controls.clear();
+        } else {
+            for &(key, on) in controls {
+                let Some((_, old)) = self.settled_controls.iter().find(|(id, _)| *id == key) else { continue };
+                if *old != on {
+                    let from = if let Some(sw) = self.controls.iter().find(|sw| sw.key == key) {
+                        motion::compose_with(self.now.saturating_sub(sw.start), sw.from, sw.to, 800.0, 0.6).0.clamp(0.0, 1.0)
+                    } else if *old { 1.0 } else { 0.0 };
+                    self.controls.retain(|sw| sw.key != key);
+                    self.controls.push(ControlAnim { key, from, to: if on { 1.0 } else { 0.0 }, start: self.now });
+                    changed = true;
+                }
+            }
+        }
+        self.control_screen = Some(screen);
+        self.settled_controls = controls.to_vec();
+        changed
+    }
+
     pub(super) fn cue(&self) -> MotionCue {
         let mut cue = MotionCue::default();
         let now = self.now;
-        if let Some(sw) = self.switch {
-            cue.switch_cy = sw.cy;
-            cue.switch_pos = motion::compose(now.saturating_sub(sw.start), sw.from, sw.to, 0.5).0.clamp(0.0, 1.0);
-        }
+        cue.controls = self.controls.iter().map(|control| {
+            let pos = motion::compose_with(now.saturating_sub(control.start), control.from, control.to, 800.0, 0.6).0;
+            (control.key, pos.clamp(0.0, 1.0))
+        }).collect();
+        cue.moving_keys = self.active;
+        cue.switch_press_cy = self.press_cy;
+        cue.switch_press = self.press.at(now).0.clamp(0.0, 1.0);
         cue.handle = self.handle.at(now).0.clamp(0.0, 1.0);
-        if let Some(check) = self.check {
-            cue.check = check.row;
-            cue.check_pop = motion::compose(now.saturating_sub(check.start), 0.6, 1.0, 0.5).0;
-        }
         if let Some(seg) = self.segment {
             cue.segment_on = true;
             cue.segment_top = seg.top;
@@ -163,12 +198,8 @@ impl Expressive {
 }
 
 impl App {
-    pub(super) fn row_squeeze_live(&self, now: u64) -> bool {
-        self.expressive_active() && self.row_press.is_some_and(|press| !press.squeeze_settled(now))
-    }
-
     pub(super) fn expressive_active(&self) -> bool {
-        self.state.style == UiStyle::MaterialExpressive && !self.state.appearance.reduce_motion
+        !self.state.appearance.reduce_motion
     }
 
     pub(super) fn sample_expressive(&mut self, now: u64) {
@@ -176,7 +207,16 @@ impl App {
         let key_down = self.state.held.is_some();
         let icon_down = self.pressing().is_some();
         let handle_down = matches!(self.drag, Drag::Slider(_, _) | Drag::Confirm { .. });
-        let rebuild = self.expressive.advance(now, active, key_down, icon_down, handle_down);
+        let switch_down = match self.drag {
+            Drag::Press { action: Some(_), .. } => self.row_press.and_then(|press| {
+                self.frame.as_ref()?.canvas.controls.iter().find_map(|(key, _)| {
+                    let ControlId::Switch(x, y) = *key else { return None };
+                    press.rect.contains(x as f32 - 1.0, y as f32).then_some(y as f32)
+                })
+            }),
+            _ => None,
+        };
+        let rebuild = self.expressive.advance(now, active, key_down, icon_down, handle_down, switch_down);
         self.expressive.follow_icon(if icon_down { self.pressing() } else { None }, now);
         if rebuild {
             self.frame = None;
@@ -185,7 +225,7 @@ impl App {
             self.layer = None;
             self.stale.clear();
             self.dirty = true;
-        } else if active && (self.expressive.icon_live(now) || self.row_squeeze_live(now)) {
+        } else if active && (self.expressive.icon_live(now) || self.row_press.is_some_and(|press| press.changing(now))) {
             self.dirty = true;
         }
     }
@@ -197,26 +237,6 @@ impl App {
         }
         let Some(row) = self.row_press.map(|press| press.rect) else { return };
         match action {
-            Action::Toggle(switch) => {
-                let on = match switch {
-                    Switch::Vibrate => self.state.vibrate,
-                    Switch::FileTransfer => self.state.file_transfer,
-                    Switch::Compress => self.state.compress,
-                    Switch::Verify => self.state.verify,
-                    Switch::Signature => self.state.check_signature,
-                    Switch::KeepRecovery => self.state.keep_recovery,
-                    Switch::ShowPassword => self.state.show_password,
-                    Switch::ReduceMotion => self.state.appearance.reduce_motion,
-                    Switch::Wlan => self.state.wlan.as_ref().is_some_and(|w| !matches!(w.power, Power::Off | Power::Failed(_))),
-                    Switch::SystemTimeZone => self.state.follow_system_zone,
-                };
-                self.expressive.switch = Some(SwitchAnim {
-                    cy: row.y + row.h / 2.0,
-                    from: if on { 1.0 } else { 0.0 },
-                    to: if on { 0.0 } else { 1.0 },
-                    start: now,
-                });
-            }
             Action::Style(style) => {
                 // The appearance card lists Material 3 Expressive, then Miuix.
                 let from = u8::from(self.state.style != UiStyle::MaterialExpressive);
@@ -224,24 +244,6 @@ impl App {
                 self.note_segment(row, from, to, now);
             }
             Action::Theme { dark } => self.note_segment(row, u8::from(self.state.dark), u8::from(*dark), now),
-            Action::ColorSource(_)
-            | Action::WipeItem(_)
-            | Action::ScreenOff(_)
-            | Action::TimeZone(_)
-            | Action::Language(_)
-            | Action::RebootTarget(_)
-            | Action::BackupPart(_)
-            | Action::RestorePart(_)
-            | Action::LogPart(_)
-            | Action::FlashPartition(_)
-            | Action::FlashSlots(_)
-            | Action::PickSlot(_)
-            | Action::BackupItem(_)
-            | Action::RestoreItem(_)
-            | Action::ExtractToggle(_)
-            | Action::BackupIndividual => {
-                self.expressive.check = Some(CheckAnim { row, start: now });
-            }
             _ => {}
         }
     }
@@ -251,5 +253,26 @@ impl App {
             return;
         }
         self.expressive.segment = Some(SegmentAnim { top: row.y - self.theme().m.dp(39.0), from, to, start: now });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rendered_switches_animate_without_a_matching_action() {
+        let (first, second) = (ControlId::Switch(640, 300), ControlId::Check(640, 480));
+        let mut motion = Expressive::new();
+        assert!(!motion.observe_controls(Screen::Permissions, &[(first, false), (second, true)], true));
+        assert!(motion.observe_controls(Screen::Permissions, &[(first, true), (second, false)], true));
+        assert_eq!(motion.cue().controls[0], (first, 0.0));
+        assert_eq!(motion.cue().controls[1], (second, 1.0));
+        motion.advance(55, true, false, false, false, None);
+        let cue = motion.cue();
+        assert!(cue.controls[0].1 > 0.0);
+        assert!(cue.controls[1].1 < 1.0);
+        motion.observe_controls(Screen::Mount, &[(first, false)], true);
+        assert!(motion.cue().controls.is_empty());
     }
 }

@@ -40,10 +40,12 @@ impl App {
             for rows in std::mem::take(&mut self.stale) {
                 let band = Band { rows, cols: (0, self.cols) };
                 let cx = Ctx { t: &t, f, info, state: &self.state, term: self.term.as_ref(), vnc: self.vnc.as_ref(), band: Some(band) };
-                let fresh = self.render_page(screen, &cx);
+                let mut fresh = self.render_page(screen, &cx);
                 let mut canvas = self.frame.take().expect("checked above").canvas;
                 assert_eq!(canvas.h, fresh.canvas.h, "a page drawn again in part is as tall as it was");
                 canvas.replace(&fresh.canvas);
+                canvas.keyboard_top = fresh.canvas.keyboard_top;
+                canvas.controls = std::mem::take(&mut fresh.canvas.controls);
                 self.frame = Some(Frame { canvas, ..fresh });
             }
         }
@@ -60,6 +62,8 @@ impl App {
             if self.cols < self.w {
                 let mut whole = Canvas::unfilled(self.w, frame.canvas.h, frame.canvas.held());
                 whole.replace(&frame.canvas);
+                whole.keyboard_top = frame.canvas.keyboard_top;
+                whole.controls = std::mem::take(&mut frame.canvas.controls);
                 frame.canvas = whole;
             }
             self.height = frame.height(&t);
@@ -71,16 +75,31 @@ impl App {
                 self.bar.jump(bar);
             }
         }
+        let screen = self.screen();
+        let animate = self.expressive_active();
+        let frame = self.frame.as_ref().expect("rendered above");
+        if self.expressive.observe_controls(screen, &frame.canvas.controls, animate) {
+            self.frame = None;
+            self.dirty = true;
+            return self.render(f, info, wide);
+        }
         self.frame.as_ref().expect("rendered above")
     }
 
     fn render_page(&self, screen: Screen, cx: &Ctx) -> Frame {
         let mut frame = pages::render(screen, cx);
-        if self.stack.len() == 1
-            && self.state.style == UiStyle::MaterialExpressive
-            && tabs::TABS.contains(&screen)
-        {
-            frame.dock = Some(tabs::dock(cx.t, cx.f, self.state.lang, screen, None));
+        // The dock stays under every page; the destination it shows is the
+        // one the page was opened over, or the page itself when it is one.
+        let root = self.stack.first().map_or(screen, |(s, _, _)| *s);
+        let selected = if tabs::TABS.contains(&screen) { screen } else { root };
+        if tabs::dockable(screen) && frame.canvas.keyboard_top.is_none() {
+            let destinations = tabs::dock(cx.t, cx.f, self.state.lang, selected, None);
+            frame.dock = Some(match frame.dock.take() {
+                Some(page) => tabs::stack_docks(page, destinations),
+                None => destinations,
+            });
+        }
+        if self.stack.len() == 1 {
             frame.back = false;
         }
         frame
@@ -260,6 +279,9 @@ impl App {
             let (art, x, y) = widgets::button_chip(&t);
             self.button_chip = Some((t.dark, art, x, y));
         }
+        if self.swipe.as_ref().is_some_and(|swipe| swipe.progress(now, self.w as f32).1) {
+            self.finish_swipe();
+        }
         let slide = self.slid(now);
         if self.frame.as_ref().is_some_and(|fr| fr.hero.is_none()) {
             // What of the page is on screen, drawn if it has not been yet.
@@ -267,7 +289,7 @@ impl App {
             // quarter of the screen more each frame, so it is drawn across
             // early in the slide; all of it once a row of it is held.
             let wide = match (slide, &self.turn) {
-                _ if t.wallpaper => self.w,
+                _ if t.wallpaper || self.frame.as_ref().is_some_and(|frame| frame.canvas.keyboard_top.is_some()) => self.w,
                 (Some((at, _, _)), Some(turn)) if !turn.back && self.row_press.is_none() => {
                     (self.w - at.clamp(0, self.w as i32) as u32).max(self.cols + self.w / 4)
                 }
@@ -279,7 +301,7 @@ impl App {
         // The row a finger holds, drawn once more as held down when it
         // starts darkening, and only that row: a finger that moves on
         // before then never waits for it.
-        if let (Some(press), None) = (self.row_press.filter(|p| now >= p.rise), &self.row_art) {
+        if let (Some(press), None) = (self.row_press.filter(|p| now >= p.rise && p.ripple.is_none()), &self.row_art) {
             let page = &self.frame.as_ref().expect("rendered above").canvas;
             let (x, y, w, h) = row_part(press.rect, page);
             let pressed = t.pressed();
@@ -298,65 +320,66 @@ impl App {
             caret: caret_on,
             row: self.row_press.map_or(0.0, |p| p.level(now)),
             pressing: self.pressing(),
-            squeeze: if self.expressive_active() { self.row_press.map_or(0.0, |p| p.squeeze(now)) } else { 0.0 },
+            ripple: self.row_press.and_then(|p| p.ripple(now)),
         };
         let tab_progress = self.tab_motion.as_ref().map(|motion| motion.progress(now));
         if tab_progress.is_some_and(|progress| progress >= 1.0) {
             self.finish_tab_motion();
         }
-        match slide {
-            Some((at, shift, dim)) => {
-                // The page shown is drawn on its own canvas, once for as
-                // long as it shows the same, and slid from there with the
-                // page left.
-                // A page opened shows nothing of itself until its edge comes
-                // in from the right: the page left alone shows.
-                let back = self.turn.as_ref().expect("sliding").back;
-                if !back && at >= self.w as i32 {
-                    let left = &self.turn.as_ref().expect("sliding").left;
-                    out.slide(left, left, at, shift, dim, self.corners);
-                } else {
-                    let still = self.frame.as_ref().is_some_and(|fr| fr.hero.is_none());
-                    let page = match self.layer.take() {
-                        Some((shown, c)) if still && shown == view => c,
-                        kept => {
-                            let mut c = kept.map(|(_, c)| c).unwrap_or_else(|| Canvas::new(out.w, out.h));
-                            self.paint_page(&mut c, &t, Some((f, info)), &view);
-                            c
-                        }
-                    };
-                    let turn = self.turn.as_ref().expect("sliding");
-                    let (front, behind) = if back { (&turn.left, &page) } else { (&page, &turn.left) };
-                    out.slide(front, behind, at, shift, dim, self.corners);
-                    self.layer = Some((view, page));
+        if !self.paint_swipe(out, &t, now) {
+            match slide {
+                Some((at, shift, dim)) => {
+                    // The page shown is drawn on its own canvas, once for as
+                    // long as it shows the same, and slid from there with the
+                    // page left.
+                    // A page opened shows nothing of itself until its edge comes
+                    // in from the right: the page left alone shows.
+                    let back = self.turn.as_ref().expect("sliding").back;
+                    if !back && at >= self.w as i32 {
+                        let left = &self.turn.as_ref().expect("sliding").left;
+                        out.slide(left, left, at, shift, dim, self.corners);
+                    } else {
+                        let still = self.frame.as_ref().is_some_and(|fr| fr.hero.is_none());
+                        let page = match self.layer.take() {
+                            Some((shown, c)) if still && shown == view => c,
+                            kept => {
+                                let mut c = kept.map(|(_, c)| c).unwrap_or_else(|| Canvas::new(out.w, out.h));
+                                self.paint_page(&mut c, &t, Some((f, info)), &view);
+                                c
+                            }
+                        };
+                        let turn = self.turn.as_ref().expect("sliding");
+                        let (front, behind) = if back { (&turn.left, &page) } else { (&page, &turn.left) };
+                        out.slide(front, behind, at, shift, dim, self.corners);
+                        self.layer = Some((view, page));
+                    }
                 }
-            }
-            None => {
-                if self.tab_motion.is_some() {
-                    let mut page = self.layer.take().map(|(_, page)| page).unwrap_or_else(|| Canvas::new(out.w, out.h));
-                    self.paint_page(&mut page, &t, Some((f, info)), &view);
-                    let motion = self.tab_motion.as_ref().expect("tab motion is present");
-                    motion.paint(out, &page, now);
-                    self.layer = Some((view, page));
-                } else {
-                    self.layer = None;
-                    self.paint_page(out, &t, Some((f, info)), &view);
+                None => {
+                    if self.tab_motion.is_some() {
+                        let mut page = self.layer.take().map(|(_, page)| page).unwrap_or_else(|| Canvas::new(out.w, out.h));
+                        self.paint_page(&mut page, &t, Some((f, info)), &view);
+                        let motion = self.tab_motion.as_ref().expect("tab motion is present");
+                        motion.paint(out, &page, now);
+                        self.layer = Some((view, page));
+                    } else {
+                        self.layer = None;
+                        self.paint_page(out, &t, Some((f, info)), &view);
+                    }
                 }
             }
         }
-        if t.style == UiStyle::MaterialExpressive && tabs::TABS.contains(&screen) && self.stack.len() == 1 {
-            if tab_progress.is_some() {
-                let poses = self.tab_motion.as_ref().map(|motion| motion.poses(screen, now));
-                let dock = tabs::dock(&t, f, self.state.lang, screen, poses);
-                self.frame.as_mut().expect("rendered above").dock = Some(dock);
-                self.spots = None;
-            }
-            if let Some(dock) = self.frame.as_ref().and_then(|frame| frame.dock.as_ref()) {
-                out.lay(&dock.canvas, 0, (out.h - dock.canvas.h) as i32, 1.0);
-                if let Some((Group::Dock, r, radius, tint)) = view.light {
-                    out.fill_round_rect(r.x, r.y, r.w, r.h, radius, tint);
-                }
-            }
+        if tab_progress.is_some()
+            && let Some(poses) = self.tab_motion.as_ref().map(|motion| motion.poses(screen, now))
+        {
+            let dock = tabs::dock(&t, f, self.state.lang, screen, Some(poses));
+            self.frame.as_mut().expect("rendered above").dock = Some(dock);
+            self.spots = None;
+        }
+        self.paint_bottom(out, &t, now);
+        if !self.keyboard_visibility.is_some_and(|fade| fade.level(now) > 0.0)
+            && let Some((Group::Dock, r, radius, tint)) = view.light
+        {
+            out.fill_round_rect(r.x, r.y, r.w, r.h, radius, tint);
         }
         self.shown = Some(view);
 
@@ -364,16 +387,63 @@ impl App {
         if let Some((text, _)) = &self.toast {
             widgets::toast(out, &t, f, text);
         }
-        match self.drag {
-            Drag::Edge { start, from_left, armed, x, cy } => {
-                let travel = if from_left { x - start } else { start - x };
-                widgets::back_cue(out, &t, from_left, cy, widgets::back_cue_depth(&t, travel), armed);
-            }
-            _ => {
-                if let Some((from_left, cy, s)) = self.cue {
-                    widgets::back_cue(out, &t, from_left, cy, s.at(now).0.max(0.0), false);
+        if self.swipe.is_none() {
+            match self.drag {
+                Drag::Edge { start, from_left, armed, x, cy } => {
+                    let travel = if from_left { x - start } else { start - x };
+                    widgets::back_cue(out, &t, from_left, cy, widgets::back_cue_depth(&t, travel), armed);
+                }
+                _ => {
+                    if let Some((from_left, cy, s)) = self.cue {
+                        widgets::back_cue(out, &t, from_left, cy, s.at(now).0.max(0.0), false);
+                    }
                 }
             }
+        }
+    }
+
+    /// Compose the keyboard and destination dock above the page transition.
+    fn paint_bottom(&mut self, out: &mut Canvas, t: &Theme, now: u64) {
+        let frame = self.frame.as_ref().expect("bottom follows the current frame");
+        let top = frame.canvas.keyboard_top;
+        let shown = top.is_some();
+        let ease = Ease::Linear(200);
+        let fade = self.keyboard_visibility.get_or_insert_with(|| {
+            if shown { Fade::shown(ease, ease) } else { Fade::hidden(ease, ease) }
+        });
+        if self.state.appearance.reduce_motion {
+            fade.jump(shown);
+        } else {
+            fade.set(shown, now);
+        }
+        let level = fade.level(now);
+        self.bottom_level = level;
+        if let Some(dock) = &frame.dock {
+            if self.bottom_dock.as_ref().is_none_or(|cached| cached.data != dock.canvas.data) {
+                self.bottom_dock = Some(dock.canvas.clone());
+            }
+        }
+        if !shown && frame.dock.is_none() {
+            self.bottom_dock = None;
+        }
+        if let Some(dock) = &self.bottom_dock {
+            out.lay(dock, 0, (out.h - dock.h) as i32 + (level * t.m.dp(48.0)).round() as i32, 1.0 - level);
+        }
+        if let Some(top) = top {
+            let height = out.h.saturating_sub(top);
+            let keyboard = self.bottom_keyboard.get_or_insert_with(|| Canvas::new(out.w, height));
+            if keyboard.h != height {
+                keyboard.resize(height);
+            }
+            keyboard.put_rows(&frame.canvas, top as i32, out.h as i32, 0);
+        }
+        if level > 0.0 {
+            if let Some(keyboard) = &self.bottom_keyboard {
+                let y = (out.h - keyboard.h) as i32 - ((1.0 - level) * t.m.dp(24.0)).round() as i32;
+                out.lay(keyboard, 0, y, level);
+            }
+        } else if !shown {
+            self.bottom_keyboard = None;
         }
     }
 
@@ -400,15 +470,15 @@ impl App {
         // laid over the page.
         let press_row = |out: &mut Canvas| {
             if let Some(press) = self.row_press {
-                let (x, y, w, h) = row_part(press.rect, &frame.canvas);
+                let (x, y, _, _) = row_part(press.rect, &frame.canvas);
                 let dy = y as i32 - offset as i32;
                 if let Some((was, is)) = &self.row_art {
                     out.relay(was, is, x as i32, dy, view.row);
                 }
-                if view.squeeze.abs() > 0.02 {
-                    let scale = (1.0 - 0.03 * view.squeeze).clamp(0.94, 1.04);
-                    out.pinch(x as i32, dy, w, h, scale);
-                }
+            }
+            if let Some(ripple) = view.ripple {
+                let (r, cy) = (ripple.rect, ripple.cy - offset);
+                out.ripple(r.x, r.y - offset, r.w, r.h, ripple.corners, ripple.cx, cy, ripple.radius, t.pal.row_press, ripple.alpha);
             }
         };
 
@@ -449,7 +519,8 @@ impl App {
                 }
             }
             let first = (-offset).clamp(0.0, h) as usize;
-            let last = (frame.canvas.h as f32 - offset).clamp(first as f32, list_top) as usize;
+            let content_end = frame.canvas.keyboard_top.unwrap_or(frame.canvas.h);
+            let last = (content_end as f32 - offset).clamp(first as f32, list_top) as usize;
             if first < last {
                 let from = offset as i32 + first as i32;
                 if t.wallpaper {
@@ -558,12 +629,6 @@ impl App {
             }
             shine(out, Group::Strip);
         }
-        if let Some(d) = &frame.dock
-            && !(self.state.style == UiStyle::MaterialExpressive && tabs::TABS.contains(&screen))
-        {
-            out.put(&d.canvas, (out.h - d.canvas.h) as i32);
-            shine(out, Group::Dock);
-        }
         let chip_opacity = if t.style == UiStyle::MaterialExpressive { 1.0 } else { bar };
         if frame.back {
             let (_, chip, x, y) = self.chip.as_ref().expect("a page's `<` is drawn with it");
@@ -613,7 +678,7 @@ impl App {
         });
         let (x, done) = spring.at(now);
         if done {
-            self.backdrop = self.turn.take().map(|t| t.left);
+            self.end_turn();
             return None;
         }
         // Where the page in front stands, in screen widths from the left
@@ -657,7 +722,7 @@ impl App {
             // The search page's keyboard and what it shows under its
             // field, from its frame; that comes in once the bar is nearly
             // there.
-            let (_, keys_top) = *morph.keyboard.get_or_insert_with(|| keyboard_strip(&t, frame));
+            let keys_top = frame.canvas.keyboard_top.unwrap_or(t.m.h) as i32;
             let (body, top) = morph.body.get_or_insert_with(|| {
                 let top = (field.y + field.h).ceil() as i32;
                 let mut body = Canvas::new(frame.canvas.w, (keys_top - top).max(0) as u32);
@@ -674,9 +739,6 @@ impl App {
         let title = morph.title.get_or_insert_with(|| Blurs::new(widgets::big_title(&t, f, pages::HOME_TITLE)));
         let level = (1.0 - q / MORPH_TITLE_GONE).clamp(0.0, 1.0);
         draw_faded(out, title, 0.0, rise - morph.scroll, t.pal.text, level, (1.0 - level) * m.dp(TITLE_BLUR_DP));
-        if let Some((keys, top)) = &morph.keyboard {
-            out.put(keys, (*top as f32 + (1.0 - q) * keys.h as f32).round() as i32);
-        }
         widgets::search_capsule(out, &t, f, bar, self.state.lang.pick(texts::search::HINT));
         // The cursor shows from the start, going up with the field.
         if let Some(caret) = frame.caret.as_ref().filter(|_| morph.into && caret_on) {
@@ -690,6 +752,7 @@ impl App {
         let blur = (1.0 - shown) * m.dp(MORPH_CANCEL_BLUR_DP);
         draw_faded(out, disc, 0.0, 0.0, t.pal.search, shown, blur);
         draw_faded(out, cross, 0.0, 0.0, t.pal.text, shown, blur);
+        self.paint_bottom(out, &t, now);
         self.morph = Some(morph);
         widgets::status_bar(out, &t, f, &self.bar(clock, info), t.pal.status);
         if let Some((text, _)) = &self.toast {
@@ -867,7 +930,7 @@ mod tests {
     #[test]
     fn a_page_at_rest_draws_the_rows_below_the_screen_a_band_at_a_time() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Settings, W, H, PPD);
+        let mut app = App::new(Screen::TimeZones(Region::Asia), W, H, PPD);
         app.compose(&mut Canvas::new(W, H), &f, &i, "12:00", 0);
         assert_eq!(app.frame.as_ref().unwrap().canvas.held(), 0..H, "the page shown has the rows on screen drawn");
         let mut bands = 1;
@@ -875,7 +938,7 @@ mod tests {
             bands += 1;
         }
         let t = app.theme();
-        let whole = pages::render(Screen::Settings, &Ctx { t: &t, f: &f, info: &i, state: &app.state, term: None, vnc: None, band: None }).canvas;
+        let whole = pages::render(Screen::TimeZones(Region::Asia), &Ctx { t: &t, f: &f, info: &i, state: &app.state, term: None, vnc: None, band: None }).canvas;
         let page = &app.frame.as_ref().unwrap().canvas;
         assert!(whole.h > H + H / 4, "a page well over a screen long, drawn in {bands} more bands");
         assert!(page.whole() && page.data == whole.data, "the page drawn a band at a time is the page drawn whole");
@@ -895,12 +958,9 @@ mod tests {
             let (x, y) = spot(&mut app, &f, &i, Action::Type(cap));
             app.touch(Touch::Down(x, y), &f, 0);
             assert!(app.frame.is_some() && !app.stale.is_empty() || cap == Cap::Shift, "{cap:?}: the key held is drawn again on its own");
-            app.compose(&mut out, &f, &i, "12:00", 0);
-            assert!(app.frame.as_ref().unwrap().canvas.data == anew(&app).canvas.data, "{cap:?} held down");
             app.touch(Touch::Up, &f, 0);
-            app.compose(&mut out, &f, &i, "12:00", 0);
+            app.frame(&f, &i);
             let (drawn, fresh) = (app.frame.as_ref().unwrap(), anew(&app));
-            assert!(drawn.canvas.data == fresh.canvas.data, "{cap:?} typed");
             assert_eq!(drawn.hits.iter().map(|h| h.action).collect::<Vec<_>>(), fresh.hits.iter().map(|h| h.action).collect::<Vec<_>>(), "{cap:?} typed");
         }
         assert_eq!(app.state.search, "bfQ");
@@ -913,7 +973,7 @@ mod tests {
         // taller with a notice in it.
         let under = |i: &DeviceInfo| {
             let mut app = App::new(Screen::Home, W, H, PPD);
-            app.frame(&f, i).hits.iter().find(|h| h.action == Action::Open(Screen::Install)).expect("an install row").rect.y
+            app.frame(&f, i).hits.iter().find(|h| h.action == Action::Open(Screen::Update)).expect("the first tool row").rect.y
         };
         let plain = under(&info());
         assert!(under(&DeviceInfo { battery: Some(battery_at(19, Charge::Discharging)), ..info() }) > plain, "short of 20% unplugged");
@@ -979,51 +1039,18 @@ mod tests {
         tap(&mut app, &f, &i, Action::CloseSearch);
         assert_eq!(app.screen(), Screen::Home, "the round button leaves the search");
         assert!(!shows(&mut app, 3300), "no cursor off the page");
-        assert!(app.deadline(3300).is_none_or(|d| d > 10_000), "nor a wake for it, only for the screen going off");
+        assert_eq!(app.deadline(3300), Some(0), "the keyboard is still fading away");
+        assert!(!shows(&mut app, 3600));
+        assert!(app.deadline(3600).is_none_or(|d| d > 10_000), "the cursor no longer needs a wake");
     }
 
     #[test]
     fn the_search_bar_moves_up_into_the_search_page_and_back_down() {
         let (f, i) = (fonts(), info());
-        let t = Theme::light(W, H, PPD);
-        let m = t.m;
         let mut app = App::new(Screen::Home, W, H, PPD);
-        let mut screen = Canvas::new(W, H);
-        // The bar's top along a column through it, clear of the title and
-        // the placeholder: the first row in the field's grey.
-        let x = m.dp(300.0) as u32;
-        let top = |screen: &Canvas| {
-            (m.dp(40.0) as u32..H).find(|&y| screen.data[((y * W + x) * 4) as usize] == t.pal.search.r).map(|y| y as f32)
-        };
-        let grey = |screen: &Canvas, y: f32| screen.data[((y as u32 * W + W / 2) * 4) as usize];
-        let (home, field) = (m.content_top, widgets::search_layout(&t).0.y);
-        // The device card under the home page's bar.
-        let card = m.content_top + m.search_h + m.after_search + m.dp(20.0);
-        app.compose(&mut screen, &f, &i, "12:00", 0);
-        assert_eq!(grey(&screen, card), t.pal.card.r);
-
-        tap_at(&mut app, &f, &i, Action::Open(Screen::Search), 1000);
+        tap_button(&mut app, &f, &i, 1000);
         assert_eq!(app.screen(), Screen::Search);
-        assert_eq!(app.deadline(1000), Some(0), "it moves frame by frame");
-        app.compose(&mut screen, &f, &i, "12:00", 1067);
-        let along = crate::motion::settle(67, MORPH_PERIOD);
-        let expected = home + (field - home) * along;
-        let at = top(&screen).expect("the bar is on screen");
-        assert!((at - expected).abs() <= 2.0, "up {along} of the way after 67 ms: at {at}, not {expected}");
-        assert_eq!(grey(&screen, card), t.pal.bg.r, "the home page's cards go at once");
-        app.compose(&mut screen, &f, &i, "12:00", 2500);
-        assert!(app.morph.is_none(), "settled, the search page shows as itself");
-        assert_eq!(top(&screen), Some(field.ceil()));
-
-        tap_at(&mut app, &f, &i, Action::CloseSearch, 3000);
+        tap(&mut app, &f, &i, Action::CloseSearch);
         assert_eq!(app.screen(), Screen::Home);
-        app.compose(&mut screen, &f, &i, "12:00", 3067);
-        let expected = field + (home - field) * along;
-        let at = top(&screen).expect("the bar is on screen");
-        assert!((at - expected).abs() <= 2.0, "down {along} of the way after 67 ms: at {at}, not {expected}");
-        assert_eq!(grey(&screen, card + (at - home)), t.pal.card.r, "the cards come down under the bar");
-        app.compose(&mut screen, &f, &i, "12:00", 4500);
-        assert!(app.morph.is_none());
-        assert_eq!(top(&screen), Some(home.ceil()));
     }
 }

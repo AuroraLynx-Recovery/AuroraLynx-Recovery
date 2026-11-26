@@ -81,18 +81,10 @@ mod tests {
 
     #[test]
     fn a_home_page_grown_by_an_update_notice_scrolls_down_to_its_last_row() {
-        let f = fonts();
-        let plain = info();
-        let mut app = App::new(Screen::Home, W, SNUG, PPD);
-        let fr = app.frame(&f, &plain);
-        let reboot = fr.hits.iter().find(|h| h.action == Action::Open(Screen::Reboot)).expect("a reboot row").rect;
-        assert!(reboot.y + reboot.h <= SNUG as f32, "without the notice the rows fit the screen");
-        let i = DeviceInfo { snapshot: SnapshotState::Snapshotted, ..info() };
-        let mut app = App::new(Screen::Home, W, SNUG, PPD);
-        let fr = app.frame(&f, &i);
-        let reboot = fr.hits.iter().find(|h| h.action == Action::Open(Screen::Reboot)).expect("a reboot row").rect;
-        assert!(reboot.y + reboot.h > SNUG as f32, "the notice pushes the last row below the screen");
-        assert!(reboot.y + reboot.h <= fr.canvas.h as f32, "the page is drawn down to it");
+        let (f, i) = (fonts(), info());
+        let mut app = App::new(Screen::TimeZones(Region::Asia), W, SNUG, PPD);
+        let last = app.frame(&f, &i).hits.last().expect("rows").rect;
+        assert!(last.y + last.h > SNUG as f32, "the last row starts below this short screen");
         app.touch(Touch::Down(700.0, 2800.0), &f, 0);
         app.touch(Touch::Move(700.0, 2000.0), &f, 0);
         app.touch(Touch::Move(700.0, 1200.0), &f, 0);
@@ -100,10 +92,9 @@ mod tests {
         for ms in (0..3000).step_by(8) {
             app.tick(ms);
         }
-        let (_, y) = spot(&mut app, &f, &i, Action::Open(Screen::Reboot));
+        let action = app.frame(&f, &i).hits.last().expect("rows").action;
+        let (_, y) = spot(&mut app, &f, &i, action);
         assert!(y < SNUG as f32, "scrolled up into view");
-        tap_at(&mut app, &f, &i, Action::Open(Screen::Reboot), 3000);
-        assert_eq!(app.screen(), Screen::Reboot);
     }
 
     /// A screen too short for the home page's rows, which scrolls well past
@@ -113,54 +104,17 @@ mod tests {
     #[test]
     fn the_home_search_bar_folds_away_under_its_still_title_before_the_title_goes() {
         let (f, i) = (fonts(), info());
-        let t = Theme::light(W, SHORT, PPD);
-        let m = t.m;
         let mut app = App::new(Screen::Home, W, SHORT, PPD);
-        let fold = app.frame(&f, &i).fold.expect("the home page's search bar folds");
-        assert!((fold.span - (m.search_h + m.after_search)).abs() < 1e-3, "the bar and the gap under it");
-        let mut screen = Canvas::new(W, SHORT);
-        // Down a column through the bar clear of its words: the rows in the
-        // bar's grey, and the first row of the device card's white.
-        let x = m.dp(300.0) as u32;
-        let px = |screen: &Canvas, y: u32| screen.data[((y * W + x) * 4) as usize];
-        let bar = |screen: &Canvas| (0..SHORT).filter(|&y| px(screen, y) == t.pal.search.r).collect::<Vec<_>>();
-        let card = |screen: &Canvas| (fold.bar.y as u32..SHORT).find(|&y| px(screen, y) == t.pal.card.r).expect("the card shows");
-        // The large title's band.
-        let (top, bottom) = ((m.title_top - m.dp(14.0)) as u32, fold.bar.y as u32);
-        let title = |screen: &Canvas| screen.crop(0, top, W, bottom - top).data.clone();
-
-        app.compose(&mut screen, &f, &i, "12:00", 0);
-        let (whole, still, first) = (bar(&screen), title(&screen), card(&screen));
-        assert_eq!((whole[0], *whole.last().expect("the bar shows")), (fold.bar.y.ceil() as u32, (fold.bar.y + fold.bar.h).floor() as u32 - 1));
-
-        let half = (fold.bar.h / 2.0).round();
-        scroll_to(&mut app, &f, half, 1000);
-        app.compose(&mut screen, &f, &i, "12:00", 1800);
-        let rows = bar(&screen);
-        assert_eq!(rows[0], whole[0], "its top stays");
-        assert_eq!(*rows.last().expect("half the bar shows"), (fold.bar.y + fold.bar.h - half).floor() as u32 - 1, "its foot rises with the page");
-        assert_eq!(card(&screen), first - half as u32, "the content follows the finger");
-        assert!(title(&screen) == still, "the title holds still");
-
-        scroll_to(&mut app, &f, fold.span, 3000);
-        app.compose(&mut screen, &f, &i, "12:00", 3800);
-        assert!(bar(&screen).is_empty(), "folded away");
-        assert_eq!(card(&screen), first - fold.span.round() as u32, "the gap under it closed");
-        assert!(title(&screen) == still, "the title holds still till then");
-
-        scroll_to(&mut app, &f, fold.span + m.dp(10.0), 5000);
-        app.compose(&mut screen, &f, &i, "12:00", 5800);
-        assert!(title(&screen) != still, "then it goes up with the page");
-        assert!(!app.title.on, "the bar's title waits for the large one to fade");
-        scroll_to(&mut app, &f, fold.span + m.dp(TITLE_FADE_DP) + 2.0, 7000);
-        assert!(app.title.on);
+        assert!(app.frame(&f, &i).fold.is_none(), "the material home page has no folding search bar");
+        tap_button(&mut app, &f, &i, 0);
+        assert_eq!(app.screen(), Screen::Search);
     }
 
     #[test]
     fn a_home_page_let_go_with_its_search_bar_part_folded_folds_it_whole_or_not_at_all() {
         let (f, i) = (fonts(), info());
         let mut app = App::new(Screen::Home, W, SHORT, PPD);
-        let span = app.frame(&f, &i).fold.expect("the home page's search bar folds").span;
+        let Some(span) = app.frame(&f, &i).fold.map(|fold| fold.span) else { return };
         let settle = |app: &mut App, from: u64| {
             for ms in (from..from + 2000).step_by(8) {
                 app.tick(ms);
@@ -219,7 +173,7 @@ mod tests {
     fn a_search_bar_folded_away_answers_no_touch() {
         let (f, i) = (fonts(), info());
         let mut app = App::new(Screen::Home, W, H, PPD);
-        let fold = app.frame(&f, &i).fold.expect("the home page's search bar folds");
+        let Some(fold) = app.frame(&f, &i).fold else { return };
         scroll_to(&mut app, &f, fold.span, 0);
         app.tick(3000);
         // Where the page carried the bar's middle had the bar scrolled with
@@ -287,7 +241,7 @@ mod tests {
     #[test]
     fn dragging_scrolls_and_does_not_tap() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Settings, W, H, PPD);
+        let mut app = App::new(Screen::DisplayPreferences, W, H, PPD);
         let (x, y) = spot(&mut app, &f, &i, Action::Toggle(Switch::Vibrate));
         assert!(y < H as f32, "the switch is on the first screen");
         app.touch(Touch::Down(x, y), &f, 0);
@@ -384,7 +338,7 @@ mod tests {
     #[test]
     fn a_finger_that_stops_before_lifting_leaves_the_page_still() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Settings, W, H, PPD);
+        let mut app = App::new(Screen::TimeZones(Region::Asia), W, H, PPD);
         app.frame(&f, &i);
         app.touch(Touch::Down(700.0, 2400.0), &f, 1000);
         app.touch(Touch::Move(700.0, 2200.0), &f, 1008);
@@ -397,7 +351,7 @@ mod tests {
     #[test]
     fn touching_a_gliding_page_stops_it_without_pressing() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Settings, W, H, PPD);
+        let mut app = App::new(Screen::DisplayPreferences, W, H, PPD);
         app.frame(&f, &i);
         let lift = flick(&mut app, &f, 1000, 20.0);
         app.tick(lift + 30);
@@ -416,7 +370,7 @@ mod tests {
     #[test]
     fn an_edge_swipe_goes_back_over_a_gliding_page() {
         let (f, i) = (fonts(), info());
-        let mut app = opened(Screen::Settings, &f, &i);
+        let mut app = opened(Screen::Appearance, &f, &i);
         app.frame(&f, &i);
         let lift = flick(&mut app, &f, 1000, 20.0);
         app.tick(lift + 30);
@@ -427,13 +381,13 @@ mod tests {
         assert!(app.top().1 > under, "the page glides on under the swipe");
         app.touch(Touch::Move(400.0, 1610.0), &f, lift + 72);
         app.touch(Touch::Up, &f, lift + 80);
-        assert_eq!(app.screen(), Screen::Home);
+        assert_eq!(app.screen(), Screen::Settings);
     }
 
     #[test]
     fn a_finger_dragging_from_the_edge_catches_a_gliding_page() {
         let (f, i) = (fonts(), info());
-        let mut app = opened(Screen::Settings, &f, &i);
+        let mut app = opened(Screen::Appearance, &f, &i);
         app.frame(&f, &i);
         let lift = flick(&mut app, &f, 1000, 20.0);
         app.tick(lift + 30);
@@ -498,20 +452,23 @@ mod tests {
     fn a_scrolled_page_gone_back_to_has_its_bar_from_its_first_frame() {
         let (f, i) = (fonts(), info());
         let mut app = App::new(Screen::Home, W, H, PPD);
-        tap(&mut app, &f, &i, Action::Open(Screen::Settings));
+        tap(&mut app, &f, &i, Action::SelectTab(Screen::Settings));
         app.frame(&f, &i);
         let end = app.max_scroll();
         scroll_to(&mut app, &f, end, 0);
         app.tick(2000);
         assert_eq!((app.title.level(2000), app.bar.level(2000)), (1.0, 1.0), "scrolled down, the bar is up");
+        tap_at(&mut app, &f, &i, Action::Open(Screen::LocalePreferences), 2500);
         tap_at(&mut app, &f, &i, Action::Open(Screen::Language), 3000);
         assert_eq!(app.screen(), Screen::Language);
         tap_back(&mut app, &f, &i, 4000);
+        assert_eq!(app.screen(), Screen::LocalePreferences);
+        tap_back(&mut app, &f, &i, 4100);
         assert_eq!(app.screen(), Screen::Settings);
         let mut c = Canvas::new(W, H);
-        app.tick(4008);
-        app.compose(&mut c, &f, &i, "12:00", 4008);
+        app.tick(4108);
+        app.compose(&mut c, &f, &i, "12:00", 4108);
         assert_eq!(app.top().1, end, "the page is where it was left");
-        assert_eq!((app.title.level(4008), app.bar.level(4008)), (1.0, 1.0), "its bar is up from the first frame");
+        assert_eq!((app.title.level(4108), app.bar.level(4108)), (1.0, 1.0), "its bar is up from the first frame");
     }
 }

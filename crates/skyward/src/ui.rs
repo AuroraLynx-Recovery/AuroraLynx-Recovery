@@ -15,6 +15,7 @@ use crate::systems;
 use crate::updates;
 use crate::wipe::{self, Eraser, Step};
 use crate::wlan;
+use crate::mobile;
 use anyhow::{anyhow, ensure, Context, Result};
 use skyward_block::fsck::Fixed;
 use skyward_block::{fstab, mount, probe};
@@ -1079,6 +1080,10 @@ fn wlan_worker(w: &Option<wlan::Worker>) -> Result<&wlan::Worker> {
     w.as_ref().context("the phone's WLAN is not brought up")
 }
 
+fn mobile_worker(w: &Option<mobile::Worker>) -> Result<&mobile::Worker> {
+    w.as_ref().context("the phone's radio is not brought up")
+}
+
 /// The installed system, as the update server is told of it.
 fn installed(cfg: &DeviceConfig, info: &skyward_info::DeviceInfo) -> Result<Installed> {
     let slot = info.slot.context("only an A/B phone is updated")?;
@@ -1287,6 +1292,11 @@ pub fn authenticate_recovery(cfg: &DeviceConfig, font: &Path, mono: &Path, lock:
     }
 }
 
+enum ModuleInstallReport {
+    Log(String),
+    End(Result<(), String>),
+}
+
 /// The pages, and all the loop that runs them holds from one turn to the
 /// next: the panel and what is drawn on it, what the phone tells of
 /// itself, the request from misc, and the work under way, each on a thread
@@ -1376,7 +1386,7 @@ struct Pages<'a> {
     /// Copying, moving or deleting under way.
     worker: Option<filework::Worker>,
     extractor: Option<skyward_sys::worker::Worker<Result<(), String>>>,
-    module_installer: Option<skyward_sys::worker::Worker<Result<(), String>>>,
+    module_installer: Option<skyward_sys::worker::Worker<ModuleInstallReport>>,
     wallpaper_import: Option<skyward_sys::worker::Worker<Result<skyward_ui::wallpaper::Wallpaper, String>>>,
     /// Giving the data partition's files their SELinux labels under way.
     relabeler: Option<filework::Worker>,
@@ -1397,6 +1407,8 @@ struct Pages<'a> {
     servers: Servers,
     /// The WLAN, on a phone whose driver the recovery brings up.
     wlan: Option<wlan::Worker>,
+    /// Cellular data, on a phone whose product listed radio modules or helpers.
+    mobile: Option<mobile::Worker>,
     scanned_at: Instant,
     /// Asking the update server, and downloading the full package.
     checker: Option<updates::Worker>,
@@ -1625,6 +1637,7 @@ impl<'a> Pages<'a> {
             switched: false,
             servers: Arc::new(Mutex::new(Vec::new())),
             wlan: None,
+            mobile: None,
             scanned_at: Instant::now(),
             checker: None,
             downloader: None,
@@ -1753,6 +1766,15 @@ impl<'a> Pages<'a> {
             });
             self.wlan = Some(wlan::Worker::start(w.clone(), modules, libraries, self.servers.clone())?);
         }
+        if let Some(m) = &cfg.mobile {
+            self.app.state.mobile = Some(skyward_net::mobile::Mobile::default());
+            let modules = cfg.modules.sources.iter().map(|s| skyward_modules::source_dir(s)).collect::<Result<Vec<_>>>()?;
+            let libraries = secure::libraries().unwrap_or_else(|e| {
+                let _ = skyward_sys::kmsg(&format!("the vendor interface's libraries are not open: {e:#}"));
+                None
+            });
+            self.mobile = Some(mobile::Worker::start(m.clone(), modules, libraries, self.servers.clone())?);
+        }
         self.scanned_at = Instant::now();
         self.app.state.update_server = cfg.update.is_some();
         self.drive_at = Instant::now();
@@ -1778,11 +1800,19 @@ impl<'a> Pages<'a> {
         }
         self.tick(now)?;
         self.take_readings(now)?;
-        if let Some(result) = self.module_installer.as_ref().and_then(|worker| worker.events().into_iter().next()) {
-            self.module_installer = None;
-            self.app.state.module_zip_busy = false;
-            self.app.state.module_zip_result = Some(result);
-            self.app.state.root_modules = Some(crate::maintenance::module_catalog().map_err(|error| format!("{error:#}")));
+        let reports = self.module_installer.as_ref().map(|worker| worker.events()).unwrap_or_default();
+        if !reports.is_empty() {
+            for report in reports {
+                match report {
+                    ModuleInstallReport::Log(line) => self.app.module_install_log(line),
+                    ModuleInstallReport::End(result) => {
+                        self.module_installer = None;
+                        self.app.state.module_zip_busy = false;
+                        self.app.state.module_zip_result = Some(result);
+                        self.app.state.root_modules = Some(crate::maintenance::module_catalog().map_err(|error| format!("{error:#}")));
+                    }
+                }
+            }
             self.app.refresh();
         }
         if let Some(result) = self.extractor.as_ref().and_then(|worker| worker.events().into_iter().next()) {
@@ -1834,6 +1864,7 @@ impl<'a> Pages<'a> {
         self.merge_told(now)?;
         self.systems_told(now)?;
         self.wlan_told()?;
+        self.mobile_told();
         self.keep_settings(now)?;
         self.updates_told(now)?;
         self.skyward_told(now)?;
@@ -2036,6 +2067,9 @@ impl<'a> Pages<'a> {
         if let Some(w) = &self.wlan {
             fds.push(w.fd());
         }
+        if let Some(m) = &self.mobile {
+            fds.push(m.fd());
+        }
         if let Some(c) = &self.checker {
             fds.push(c.fd());
         }
@@ -2078,7 +2112,8 @@ impl<'a> Pages<'a> {
             || self.skyward_checker.is_some()
             || self.skyward_updater.is_some()
             || systems_busy;
-        let joining = self.app.state.wlan.as_ref().and_then(|w| w.joined.as_ref()).is_some_and(|j| matches!(j.stage, Joining::Joining | Joining::Addressing));
+        let joining = self.app.state.wlan.as_ref().and_then(|w| w.joined.as_ref()).is_some_and(|j| matches!(j.stage, Joining::Joining | Joining::Addressing))
+            || self.app.state.mobile.as_ref().is_some_and(|m| matches!(m.power, WlanPower::Starting));
         let running = match &self.shell {
             Some(sh) => !sh.waiting()?,
             None => false,
@@ -2462,6 +2497,12 @@ impl Pages<'_> {
             wlan_worker(&self.wlan)?.send(wlan::Command::Scan);
         }
         Ok(())
+    }
+
+    fn mobile_told(&mut self) {
+        if let Some(told) = self.mobile.as_ref().and_then(mobile::Worker::told) {
+            self.app.set_mobile(told);
+        }
     }
 
     /// Settings changed go into their file a moment after the last change,
@@ -2928,7 +2969,7 @@ impl Pages<'_> {
                 self.app.refresh();
             }
             Effect::InstallModuleZip { manager, path } => {
-                use crate::maintenance::{ModuleAction, RootManager};
+                use crate::maintenance::RootManager;
                 use skyward_ui::app::ModuleManager;
                 let manager = match manager {
                     ModuleManager::Magisk => RootManager::Magisk,
@@ -2936,8 +2977,10 @@ impl Pages<'_> {
                     ModuleManager::APatch => RootManager::APatch,
                 };
                 let result = skyward_sys::worker::Worker::start("module install", move |tell| {
-                    let action = ModuleAction::Install { manager, zip: PathBuf::from(path) };
-                    tell.tell(crate::maintenance::modules(action).map_err(|error| format!("{error:#}")));
+                    let result = crate::maintenance::install_module(manager, Path::new(&path), |line| {
+                        tell.tell(ModuleInstallReport::Log(line));
+                    });
+                    tell.tell(ModuleInstallReport::End(result.map_err(|error| format!("{error:#}"))));
                 });
                 match result {
                     Ok(worker) => self.module_installer = Some(worker),
@@ -3079,6 +3122,7 @@ impl Pages<'_> {
                 self.merger = Some(merge::Merger::start(slot, true)?);
             }
             Effect::Wlan(on) => wlan_worker(&self.wlan)?.send(if on { wlan::Command::On } else { wlan::Command::Off }),
+            Effect::Mobile(on) => mobile_worker(&self.mobile)?.send(if on { mobile::Command::On } else { mobile::Command::Off }),
             Effect::ScanWlan => {
                 self.scanned_at = Instant::now();
                 wlan_worker(&self.wlan)?.send(wlan::Command::Scan);

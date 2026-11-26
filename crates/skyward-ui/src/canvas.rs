@@ -78,6 +78,32 @@ pub fn take_watched() -> Watched {
 /// A canvas may hold only a band of its rows, and of those only some
 /// columns, for a page drawn a part at a time: everything is drawn where it
 /// lies on the whole, and only what falls in the part held is written.
+/// A straight-alpha RGBA8 raster target. All primitives are antialiased via
+/// signed-distance coverage so the same code produces crisp output on the
+/// device framebuffer and in host PNG previews.
+///
+/// A canvas may hold only a band of its rows, and of those only some
+/// columns, for a page drawn a part at a time: everything is drawn where it
+/// lies on the whole, and only what falls in the part held is written.
+/// Where one surface of a back gesture stands: scaled about the middle of
+/// the screen, moved by (`dx`, `dy`), its corners rounded by `radius`, and
+/// faded by `alpha`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BackShot {
+    pub scale: f32,
+    pub dx: f32,
+    pub dy: f32,
+    pub radius: f32,
+    pub alpha: f32,
+}
+
+/// A straight-alpha RGBA8 raster target. All primitives are antialiased via
+/// signed-distance coverage so the same code produces crisp output on the
+/// device framebuffer and in host PNG previews.
+///
+/// A canvas may hold only a band of its rows, and of those only some
+/// columns, for a page drawn a part at a time: everything is drawn where it
+/// lies on the whole, and only what falls in the part held is written.
 #[derive(Clone)]
 pub struct Canvas {
     pub w: u32,
@@ -89,6 +115,8 @@ pub struct Canvas {
     bottom: u32,
     left: u32,
     span: u32,
+    pub(crate) keyboard_top: Option<u32>,
+    pub(crate) controls: Vec<(crate::theme::ControlId, bool)>,
 }
 
 /// How a layer covers a stretch of pixels.
@@ -185,7 +213,7 @@ impl Canvas {
                 data.extend_from_within(..data.len().min(n - data.len()));
             }
         }
-        Self { w, h, data, top, bottom, left, span }
+        Self { w, h, data, top, bottom, left, span, keyboard_top: None, controls: Vec::new() }
     }
 
     /// A canvas `w` × `h` that holds rows `rows` of it whole, as whatever
@@ -200,7 +228,7 @@ impl Canvas {
         } else {
             data.resize(n, 0);
         }
-        Self { w, h, data, top, bottom, left: 0, span: w }
+        Self { w, h, data, top, bottom, left: 0, span: w, keyboard_top: None, controls: Vec::new() }
     }
 
     /// Keep memory for `n` canvases `w` × `h`, written to once, for the
@@ -518,6 +546,55 @@ impl Canvas {
         }
     }
 
+    /// Lay a Material state layer over the rectangle at (`x`, `y`) `w` ×
+    /// `h` with `corners` rounded at its four corners, as the circle of
+    /// `radius` about (`cx`, `cy`) that a finger's ripple spreads from.
+    #[allow(clippy::too_many_arguments)]
+    pub fn ripple(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        corners: [f32; 4],
+        cx: f32,
+        cy: f32,
+        radius: f32,
+        color: Rgba,
+        level: f32,
+    ) {
+        if level <= 0.002 || radius <= 0.0 || color.a == 0 || w <= 0.0 || h <= 0.0 {
+            return;
+        }
+        let (x0, x1) = self.columns(x.floor() as i32, (x + w).ceil() as i32);
+        let (y0, y1) = self.rows(y.floor() as i32, (y + h).ceil() as i32);
+        if x0 >= x1 || y0 >= y1 {
+            return;
+        }
+        let a = (level.clamp(0.0, 1.0) * color.a as f32).round() as u32;
+        if a == 0 {
+            return;
+        }
+        let src = [color.r, color.g, color.b, 255];
+        for py in y0..y1 {
+            for px in x0..x1 {
+                let (fx, fy) = (px as f32 + 0.5, py as f32 + 0.5);
+                let cover = round_rect_cover(fx, fy, x, y, w, h, corners);
+                if cover <= 0.0 {
+                    continue;
+                }
+                let edge = (radius - (fx - cx).hypot(fy - cy) + 0.5).clamp(0.0, 1.0);
+                let k = cover * edge;
+                if k <= 0.002 {
+                    continue;
+                }
+                let i = self.at(px, py);
+                let dst: [u8; 4] = self.data[i..i + 4].try_into().expect("four bytes a pixel");
+                self.data[i..i + 4].copy_from_slice(&mix(dst, src, (k * a as f32).round() as u32));
+            }
+        }
+    }
+
     /// Show a page sliding over another, as pages open and go back: the
     /// page `front` in front, standing `at` pixels from the left edge with
     /// its left corners rounded to `radius`, over the page `behind`,
@@ -525,6 +602,95 @@ impl Canvas {
     /// (black laid over it, 0 to 1), and black past its right edge. Both
     /// pages are as big as this canvas, and each of its pixels is written
     /// once.
+    pub fn back(&mut self, front: &Canvas, behind: &Canvas, front_at: BackShot, behind_at: BackShot, scrim: f32, bg: Rgba) {
+        assert!((front.w, front.h) == (self.w, self.h) && (behind.w, behind.h) == (self.w, self.h), "the pages are one size");
+        assert!(self.whole() && front.whole() && behind.whole(), "pages go back whole");
+        let (w, h) = (self.w as i32, self.h as i32);
+        let wu = w as usize;
+        let (cx, cy) = (w as f32 / 2.0, h as f32 / 2.0);
+        let keep = ((1.0 - scrim.clamp(0.0, 1.0)) * 256.0).round() as u32;
+        let bg_px = u32::from_le_bytes([bg.r, bg.g, bg.b, 255]);
+        let (bs, bdx, bdy) = (behind_at.scale.max(0.02), behind_at.dx, behind_at.dy);
+        let (fs, fdx, fdy) = (front_at.scale.max(0.02), front_at.dx, front_at.dy);
+        let alpha = front_at.alpha.clamp(0.0, 1.0);
+        let a8 = (alpha * 256.0).round() as u32;
+        // Where the front reaches: nothing outside it is sampled.
+        let (fw, fh) = (w as f32 * fs, h as f32 * fs);
+        let (fcx, fcy) = (cx + fdx, cy + fdy);
+        let (fx0, fx1) = ((fcx - fw / 2.0).floor().max(0.0) as i32, (fcx + fw / 2.0).ceil().min(w as f32) as i32);
+        let (fy0, fy1) = ((fcy - fh / 2.0).floor().max(0.0) as i32, (fcy + fh / 2.0).ceil().min(h as f32) as i32);
+        let corners = [front_at.radius * fs; 4];
+        let (left, top) = (fcx - fw / 2.0, fcy - fh / 2.0);
+        // Each surface maps a screen pixel to `pixel / scale + base`: walked
+        // a pixel at a time, no division in the loop. The front's columns
+        // and rows are read between, in 256ths, once.
+        let (sb, sf) = (1.0 / bs, 1.0 / fs);
+        let behind_base_x = cx - cx / bs - bdx;
+        let behind_base_y = cy - cy / bs - bdy;
+        let front_base_x = cx - cx / fs - fdx;
+        let front_base_y = cy - cy / fs - fdy;
+        let mut cols = Vec::with_capacity(wu);
+        for x in 0..wu {
+            let fx = ((x as f32 + 0.5) * sf + front_base_x).clamp(0.0, (w - 1) as f32);
+            let x0 = fx.floor() as usize;
+            cols.push((x0, (x0 + 1).min(wu - 1), ((fx - x0 as f32) * 256.0).round() as u32));
+        }
+        let front_px = front.data.as_chunks::<4>().0;
+        let behind_px = behind.data.as_chunks::<4>().0;
+        let row = wu * 4;
+        for y in 0..h {
+            let py = y as f32 + 0.5;
+            let sy = py * sb + behind_base_y;
+            let fy = py * sf + front_base_y;
+            let rows_front = a8 > 0 && y >= fy0 && y < fy1;
+            let behind_row = sy >= 0.0 && sy < h as f32;
+            let iy = (sy as usize).min(h as usize - 1) * wu;
+            let (fy0i, fy1i, ty) = if rows_front {
+                let at = fy.clamp(0.0, (h - 1) as f32);
+                let y0 = at.floor() as usize;
+                (y0, (y0 + 1).min(h as usize - 1), ((at - y0 as f32) * 256.0).round() as u32)
+            } else {
+                (0, 0, 0)
+            };
+            let (r0, r1) = (fy0i * wu, fy1i * wu);
+            let mut sx = 0.5 * sb + behind_base_x;
+            for x in 0..wu {
+                let mut cover = 0.0;
+                if rows_front && x as i32 >= fx0 && (x as i32) < fx1 {
+                    cover = back_cover(x as f32 + 0.5, py, left, top, fw, fh, corners[0]);
+                }
+                let pixel = if cover * alpha >= 0.998 {
+                    // The front hides the page behind here, scrim and all.
+                    let (x0, x1, tx) = cols[x];
+                    let top = lerp_px(u32::from_le_bytes(front_px[r0 + x0]), u32::from_le_bytes(front_px[r0 + x1]), tx);
+                    let bottom = lerp_px(u32::from_le_bytes(front_px[r1 + x0]), u32::from_le_bytes(front_px[r1 + x1]), tx);
+                    lerp_px(top, bottom, ty)
+                } else {
+                    let mut pixel = if behind_row && sx >= 0.0 && sx < w as f32 {
+                        u32::from_le_bytes(behind_px[(iy + sx as usize).min(behind_px.len() - 1)])
+                    } else {
+                        bg_px
+                    };
+                    if keep < 256 {
+                        pixel = darken_px(pixel, keep);
+                    }
+                    if cover > 0.002 {
+                        let (x0, x1, tx) = cols[x];
+                        let top = lerp_px(u32::from_le_bytes(front_px[r0 + x0]), u32::from_le_bytes(front_px[r0 + x1]), tx);
+                        let bottom = lerp_px(u32::from_le_bytes(front_px[r1 + x0]), u32::from_le_bytes(front_px[r1 + x1]), tx);
+                        pixel = lerp_px(pixel, lerp_px(top, bottom, ty), (a8 as f32 * cover).round() as u32);
+                    }
+                    pixel
+                };
+                let i = y as usize * row + x * 4;
+                self.data[i..i + 4].copy_from_slice(&pixel.to_le_bytes());
+                sx += sb;
+            }
+        }
+    }
+
+
+    /// Slide the front page over the one underneath.
     pub fn slide(&mut self, front: &Canvas, behind: &Canvas, at: i32, shift: i32, dim: f32, radius: f32) {
         assert!((front.w, front.h) == (self.w, self.h) && (behind.w, behind.h) == (self.w, self.h), "the pages are one size");
         assert!(self.whole() && front.whole() && behind.whole(), "pages slide whole");
@@ -573,6 +739,11 @@ impl Canvas {
         }
     }
 
+    /// Draw the page `front` shrinking away over the page `behind`, as
+    /// Android's predictive back draws a page leaving: each surface scaled
+    /// about the middle of the screen and moved, the front with its corners
+    /// rounded and fading, the page behind darkened by `scrim`, and `bg`
+    /// where neither reaches.
     /// A copy of the `w` × `h` pixels from (`x`, `y`), which lie in the rows
     /// this canvas holds.
     pub fn crop(&self, x: u32, y: u32, w: u32, h: u32) -> Canvas {
@@ -736,38 +907,28 @@ impl Canvas {
         self.fill_round_rect_ends(x, y, w, h, (r, r), grade);
     }
 
-    /// Horizontal row segment, with different corner radii at its two ends.
+    /// A rounded rectangle whose ends are rounded differently: `radii` is
+    /// the radius at its left end and at its right end.
     pub(crate) fn fill_round_rect_ends(
         &mut self, x: f32, y: f32, w: f32, h: f32, radii: (f32, f32), grade: &dyn Fn(f32) -> Rgba,
     ) {
-        let (cx, cy) = (x + w / 2.0, y + h / 2.0);
-        let (hx, hy) = (w / 2.0, h / 2.0);
+        self.fill_round_rect_corners(x, y, w, h, [radii.0, radii.1, radii.1, radii.0], grade);
+    }
+
+    pub(crate) fn fill_round_rect_corners(
+        &mut self, x: f32, y: f32, w: f32, h: f32, corners: [f32; 4], grade: &dyn Fn(f32) -> Rgba,
+    ) {
         let (x0, x1) = self.columns((x - 1.0).floor() as i32, (x + w + 1.0).ceil() as i32);
         let (y0, y1) = self.rows((y - 1.0).floor() as i32, (y + h + 1.0).ceil() as i32);
-        if x0 >= x1 {
-            return;
-        }
-        // A pixel centre half a pixel inside the outline is covered wholly,
-        // and one half a pixel outside not at all.
         for py in y0..y1 {
             let fy = py as f32 + 0.5;
-            let r = if fy < cy { radii.0 } else { radii.1 }.min(hx).min(hy);
-            let qy = (fy - cy).abs() - (hy - r);
-            let Some(outer) = round_reach(hx, r, qy, 0.5) else { continue };
             let color = grade(fy);
-            let lo = ((cx - outer - 0.5).floor() as i32).max(x0);
-            let hi = (((cx + outer - 0.5).ceil() as i32) + 1).min(x1).max(lo);
-            let (a, b) = match round_reach(hx, r, qy, -0.5) {
-                Some(inner) => centred(cx, inner, lo, hi),
-                None => (hi, hi),
-            };
-            for px in (lo..a).chain(b..hi) {
-                let cov = (0.5 - rr_sdf(px as f32 + 0.5, fy, cx, cy, hx, hy, r)).clamp(0.0, 1.0);
-                if cov > 0.0 {
-                    self.blend(px, py, color, cov);
+            for px in x0..x1 {
+                let cover = round_rect_cover(px as f32 + 0.5, fy, x, y, w, h, corners);
+                if cover > 0.0 {
+                    self.blend(px, py, color, cover);
                 }
             }
-            self.span(py, a, b, color);
         }
     }
 
@@ -1304,6 +1465,64 @@ fn mix(d: [u8; 4], s: [u8; 4], a: u32) -> [u8; 4] {
     (rb | (g << 8) | (dv & 0xff00_0000)).to_le_bytes()
 }
 
+/// How much of the pixel (`px`, `py`) a rectangle at (`x`, `y`) `w` × `h`,
+/// its corners rounded by `corners`, covers, from 0 to 1.
+/// How much of the pixel (`px`, `py`) the front surface of a back gesture
+/// covers, its corners rounded by `r`: whole away from its corners, and
+/// read off the corners' curve near them.
+#[inline]
+fn back_cover(px: f32, py: f32, left: f32, top: f32, w: f32, h: f32, r: f32) -> f32 {
+    let r = r.min(w / 2.0).min(h / 2.0).max(0.0);
+    if px >= left + r && px <= left + w - r {
+        return ((py - top).min(top + h - py) + 0.5).clamp(0.0, 1.0);
+    }
+    if py >= top + r && py <= top + h - r {
+        return ((px - left).min(left + w - px) + 0.5).clamp(0.0, 1.0);
+    }
+    let cx = left + w / 2.0;
+    let cy = top + h / 2.0;
+    let qx = (px - cx).abs() - (w / 2.0 - r);
+    let qy = (py - cy).abs() - (h / 2.0 - r);
+    let d = if qx > 0.0 && qy > 0.0 { qx.hypot(qy) - r } else { qx.max(qy) - r };
+    (0.5 - d).clamp(0.0, 1.0)
+}
+
+/// The opaque pixel `b` mixed into `a` by `t` 256ths: their red and blue
+/// taken in one multiply, then their green.
+#[inline]
+fn lerp_px(a: u32, b: u32, t: u32) -> u32 {
+    let t = t.min(256);
+    let rb = (((b & 0x00ff_00ff) * t + (a & 0x00ff_00ff) * (256 - t) + 0x0080_0080) >> 8) & 0x00ff_00ff;
+    let g = (((((b >> 8) & 0xff) * t + ((a >> 8) & 0xff) * (256 - t)) >> 8) + 0) & 0xff;
+    rb | (g << 8) | 0xff00_0000
+}
+
+/// The packed pixel `p` keeping `keep` 256ths of its light.
+#[inline]
+fn darken_px(p: u32, keep: u32) -> u32 {
+    let rb = (((p & 0x00ff_00ff) * keep) >> 8) & 0x00ff_00ff;
+    let g = (((p >> 8) & 0xff) * keep >> 8) & 0xff;
+    rb | (g << 8) | 0xff00_0000
+}
+
+
+/// Coverage of a rounded rectangle with four independent corners.
+fn round_rect_cover(px: f32, py: f32, x: f32, y: f32, w: f32, h: f32, corners: [f32; 4]) -> f32 {
+    let (cx, cy) = (x + w / 2.0, y + h / 2.0);
+    let r = if px < cx {
+        if py < cy { corners[0] } else { corners[3] }
+    } else if py < cy {
+        corners[1]
+    } else {
+        corners[2]
+    };
+    let r = r.min(w / 2.0).min(h / 2.0).max(0.0);
+    let qx = (px - cx).abs() - (w / 2.0 - r);
+    let qy = (py - cy).abs() - (h / 2.0 - r);
+    let d = qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - r;
+    (0.5 - d).clamp(0.0, 1.0)
+}
+
 /// The opaque pixel `p` keeping `keep` 256ths of its light: its red and
 /// blue scaled in one multiply, then its green.
 #[inline]
@@ -1460,6 +1679,41 @@ mod tests {
     /// The grey of each row of `c`.
     fn greys(c: &Canvas) -> Vec<u8> {
         c.data.chunks(8).map(|row| row[0]).collect()
+    }
+
+    #[test]
+    fn a_rounded_rect_can_be_rounded_differently_at_its_two_ends() {
+        let mut c = Canvas::filled(200, 100, Rgba::rgb(255, 255, 255));
+        let ink = Rgba::rgb(0, 0, 0);
+        // Barely rounded on the left, a capsule on the right.
+        c.fill_round_rect_ends(10.0, 30.0, 180.0, 40.0, (2.0, 20.0), &|_| ink);
+        let at = |c: &Canvas, x: u32, y: u32| c.data[((y * c.w + x) * 4) as usize];
+        assert_eq!(at(&c, 11, 31), 0, "the left end keeps its corner");
+        assert_eq!(at(&c, 188, 31), 255, "the right end is cut round");
+        assert_eq!(at(&c, 188, 50), 0, "but reaches its middle");
+    }
+
+    #[test]
+    fn a_ripple_spreads_from_the_finger_within_the_shape_it_is_clipped_to() {
+        let (w, h) = (400u32, 200u32);
+        let card = Rgba::rgb(200, 200, 200);
+        let ink = Rgba::rgb(0, 0, 0).with_alpha(30);
+        let at = |c: &Canvas, x: u32, y: u32| c.data[((y * w + x) * 4) as usize];
+        let draw = |radius: f32| {
+            let mut c = Canvas::filled(w, h, card);
+            c.ripple(40.0, 40.0, 320.0, 120.0, [24.0; 4], 200.0, 100.0, radius, ink, 1.0);
+            c
+        };
+        let small = draw(40.0);
+        let large = draw(120.0);
+        assert_eq!(at(&small, 200, 100), 177, "the finger's place takes the state layer");
+        assert_eq!(at(&small, 60, 60), 200, "short of the ripple nothing does");
+        let dark = |c: &Canvas| {
+            (0..h).flat_map(|y| (0..w).map(move |x| (x, y))).filter(|&(x, y)| at(c, x, y) < 200).count()
+        };
+        assert!(dark(&large) > dark(&small), "it spreads: {} then {}", dark(&small), dark(&large));
+        assert_eq!(at(&large, 41, 41), 200, "and keeps to the shape's corner");
+        assert_eq!(at(&large, 200, 100), 177, "at its full strength over the whole shape");
     }
 
     #[test]

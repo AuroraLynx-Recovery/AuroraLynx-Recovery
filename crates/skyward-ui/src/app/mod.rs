@@ -23,6 +23,7 @@ use crate::settings::Settings;
 use crate::term::{self, Term, TermKey};
 use crate::agent::Job;
 use crate::vncview::Link;
+use crate::zt::Link as ZtLink;
 use crate::texts;
 use crate::theme::{Theme, UiStyle};
 use crate::widgets::{self, Bar, Bolt, Cap, Layer, WlanMark};
@@ -51,6 +52,7 @@ mod manager;
 mod mount;
 mod nav;
 mod power;
+mod predictive;
 mod prefs;
 mod reboot;
 mod relabel;
@@ -128,7 +130,6 @@ pub enum Screen {
     ManualColor,
     DisplayPreferences,
     LocalePreferences,
-    PartitionFlash,
     Reboot,
     Wipe,
     /// Mounting and unmounting the slot's partitions.
@@ -226,6 +227,8 @@ pub enum Screen {
     /// The WLAN switch, the network chosen and how joining it goes, and
     /// the networks in range.
     Wlan,
+    /// Cellular data: a switch, then the interface and address if any.
+    Mobile,
     /// The password of the network chosen, typed on the screen's keyboard.
     WlanPassword,
     /// The network joined, and the address and the rest it gave.
@@ -238,6 +241,8 @@ pub enum Screen {
     Vnc,
     /// Chat with an API the user names, which may run commands here.
     Agent,
+    /// Join the Aurora 互联 ZeroTier network from recovery.
+    ZeroTier,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -469,6 +474,8 @@ pub enum Action {
     AgentField(u8),
     /// Send the typed message to the API.
     AgentSend,
+    ZeroTierJoin,
+    ZeroTierLeave,
 }
 
 /// One finger, in screen pixels.
@@ -668,6 +675,9 @@ pub enum Effect {
     /// Turn the WLAN on or off; how it stands comes back with
     /// [`App::set_wlan`].
     Wlan(bool),
+    /// Turn cellular data on or off; how it stands comes back with
+    /// [`App::set_mobile`].
+    Mobile(bool),
     ScanWlan,
     JoinWlan { ssid: Vec<u8>, name: String, security: Security, password: Secret },
     LeaveWlan,
@@ -1035,7 +1045,6 @@ struct Morph {
     /// How far the home page was scrolled, where its bar stood.
     scroll: f32,
     /// The search page's keyboard, and where it rests.
-    keyboard: Option<(Canvas, i32)>,
     /// What the search page shows between its field and the keyboard, and
     /// where.
     body: Option<(Canvas, i32)>,
@@ -1052,19 +1061,46 @@ impl Morph {
     }
 }
 
-/// A row of the page under a finger, darkening behind its words and icon:
-/// where it lies on the page, when it starts darkening, and when it starts
-/// fading back.
+/// A row of the page under a finger: where it lies, when it starts showing
+/// pressed, and when it fades back. Miuix darkens the row behind its words
+/// and icon; Material 3 Expressive lays a state layer over it that spreads
+/// from the finger as Material's ripple does.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct RowPress {
     rect: Rect,
     rise: u64,
     fall: Option<u64>,
-    /// When the card's 0.97 scale spring started. Expressive starts at the
-    /// finger; the darken still waits for `rise`.
-    scale_from: u64,
-    scale_fall: Option<u64>,
+    ripple: Option<RipplePress>,
+    px_per_dp: f32,
 }
+
+/// The state layer of a Material 3 Expressive press: when it starts and
+/// fades, where on the page the finger came down, and the corners of the
+/// shape it is clipped to.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RipplePress {
+    start: u64,
+    fall: Option<u64>,
+    corners: [f32; 4],
+    at: (f32, f32),
+}
+
+/// The ripple a row shows at one frame, in page coordinates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Ripple {
+    rect: Rect,
+    corners: [f32; 4],
+    cx: f32,
+    cy: f32,
+    radius: f32,
+    alpha: f32,
+}
+
+/// How a Material state layer spreads from the finger: 225 ms to cover the
+/// control, 75 ms to come up, and 150 ms to go once the finger lifts.
+const RIPPLE_GROW_MS: u64 = 225;
+const RIPPLE_IN_MS: u64 = 75;
+const RIPPLE_OUT_MS: u64 = 150;
 
 impl RowPress {
     /// How dark the row is at `now`, from 0 to 1.
@@ -1079,39 +1115,51 @@ impl RowPress {
         }
     }
 
-    /// How far a Material card has sprung toward its pressed scale, 0 at
-    /// rest and 1 at the 0.97 scale, free to pass either end. SukiSU starts
-    /// this the moment the finger is down, with damping 0.5 and stiffness 400.
-    fn squeeze(&self, now: u64) -> f32 {
-        if now < self.scale_from {
-            return 0.0;
-        }
-        let up = motion::compose(now - self.scale_from, 0.0, 1.0, 0.5).0;
-        match self.scale_fall {
+    /// The state layer a Material row shows at `now`, if any: a circle from
+    /// the finger that reaches the row's farthest corner in
+    /// [`RIPPLE_GROW_MS`] and stays while the finger is down.
+    fn ripple(&self, now: u64) -> Option<Ripple> {
+        let press = self.ripple?;
+        let alpha = match press.fall {
             Some(fall) if now >= fall => {
-                let at = motion::compose(fall.saturating_sub(self.scale_from), 0.0, 1.0, 0.5).0;
-                motion::compose(now - fall, at, 0.0, 0.5).0
+                let up = ((fall.saturating_sub(press.start)) as f32 / RIPPLE_IN_MS as f32).clamp(0.0, 1.0);
+                up * (1.0 - ((now - fall) as f32 / RIPPLE_OUT_MS as f32).clamp(0.0, 1.0))
             }
-            _ => up,
+            _ => ((now.saturating_sub(press.start)) as f32 / RIPPLE_IN_MS as f32).clamp(0.0, 1.0),
+        };
+        if alpha <= 0.004 {
+            return None;
         }
-    }
-
-    fn squeeze_settled(&self, now: u64) -> bool {
-        if now < self.scale_from {
-            return true;
-        }
-        match self.scale_fall {
-            Some(fall) if now >= fall => motion::compose(now - fall, 1.0, 0.0, 0.5).1 && self.squeeze(now).abs() < 0.02,
-            _ => motion::compose(now - self.scale_from, 0.0, 1.0, 0.5).1,
-        }
+        let grown = ((now.saturating_sub(press.start)) as f32 / RIPPLE_GROW_MS as f32).clamp(0.0, 1.0);
+        // Fast out, slow in, as Material's ripple expands.
+        let eased = 1.0 - (1.0 - grown).powi(3);
+        let (w, h) = (self.rect.w, self.rect.h);
+        let from = 0.30 * w.max(h);
+        let to = 0.5 * w.hypot(h) + 10.0 * self.px_per_dp;
+        Some(Ripple {
+            rect: self.rect,
+            corners: press.corners,
+            cx: press.at.0,
+            cy: press.at.1,
+            radius: from + (to - from) * eased,
+            alpha,
+        })
     }
 
     fn gone(&self, now: u64) -> bool {
+        if let Some(press) = self.ripple {
+            return press.fall.is_some_and(|fall| now >= fall + RIPPLE_OUT_MS);
+        }
         self.fall.is_some_and(|fall| now >= fall && motion::settle(now - fall, ROW_PRESS_PERIOD) == 1.0)
     }
 
     /// Whether it is darkening or fading back at `now`.
     fn changing(&self, now: u64) -> bool {
+        if let Some(press) = self.ripple {
+            let growing = now < press.start + RIPPLE_GROW_MS;
+            let fading = press.fall.is_some_and(|fall| now < fall + RIPPLE_OUT_MS);
+            return growing || fading;
+        }
         let dark = self.fall.is_none() && now >= self.rise && motion::settle(now - self.rise, ROW_PRESS_PERIOD) == 1.0;
         now >= self.rise && !dark && !self.gone(now)
     }
@@ -1119,7 +1167,9 @@ impl RowPress {
     /// The finger lifted at `now`: a row that had not shown pressed yet
     /// shows it a moment.
     fn lift(&mut self, now: u64) {
-        self.scale_fall = Some(now);
+        if let Some(press) = self.ripple.as_mut() {
+            press.fall = Some(now);
+        }
         if now < self.rise {
             self.rise = now;
             self.fall = Some(now + QUICK_TAP_MS);
@@ -1143,8 +1193,8 @@ struct View {
     caret: bool,
     row: f32,
     pressing: Option<Action>,
-    /// Material card press, 0 at rest. Miuix leaves this at 0.
-    squeeze: f32,
+    /// The state layer a Material 3 Expressive row shows under the finger.
+    ripple: Option<Ripple>,
 }
 
 /// A page sliding over another as it opens or goes back, as the stock
@@ -1154,6 +1204,7 @@ struct View {
 /// page gone back to, which comes back from the left and brightens. The
 /// page in front has its left corners rounded as the screen's are.
 struct Turn {
+    depth: usize,
     /// Going back: the page in front is the page left; else the page
     /// opened.
     back: bool,
@@ -1177,14 +1228,6 @@ fn row_part(r: Rect, canvas: &Canvas) -> (u32, u32, u32, u32) {
     let (x0, y0) = (r.x.floor().max(0.0) as u32, r.y.floor().max(0.0) as u32);
     let (x1, y1) = (((r.x + r.w).ceil() as u32).min(canvas.w), ((r.y + r.h).ceil() as u32).min(canvas.h));
     (x0, y0, x1 - x0, y1 - y0)
-}
-
-/// The keyboard at the foot of a typing page's `frame`, and where it rests.
-fn keyboard_strip(t: &Theme, frame: &Frame) -> (Canvas, i32) {
-    let top = (t.m.h as f32 - widgets::keyboard_height(t)).floor() as i32;
-    let mut strip = Canvas::new(frame.canvas.w, (frame.canvas.h as i32 - top).max(0) as u32);
-    strip.put_rows(&frame.canvas, top, frame.canvas.h as i32, 0);
-    (strip, top)
 }
 
 pub struct App {
@@ -1281,6 +1324,8 @@ pub struct App {
     /// An assistant turn, until it finishes.
     agent: Option<std::sync::Arc<Job>>,
     agent_seen: u64,
+    zt: Option<std::sync::Arc<ZtLink>>,
+    zt_seen: u64,
     display_on: bool,
     /// When the screen was last touched or a key pressed; set on the first
     /// tick, so the time before the UI started does not count.
@@ -1335,6 +1380,12 @@ pub struct App {
     cols: u32,
     /// The canvas the last page left was drawn on, to draw the next on.
     backdrop: Option<Canvas>,
+    unders: std::collections::BTreeMap<usize, Canvas>,
+    swipe: Option<predictive::BackSwipe>,
+    keyboard_visibility: Option<Fade>,
+    bottom_level: f32,
+    bottom_keyboard: Option<Canvas>,
+    bottom_dock: Option<Canvas>,
     /// How round the screen's corners are, in pixels.
     corners: f32,
     dirty: bool,
@@ -1390,6 +1441,8 @@ impl App {
             vnc_seen: 0,
             agent: None,
             agent_seen: 0,
+            zt: None,
+            zt_seen: 0,
             display_on: true,
             active: None,
             woke_at: None,
@@ -1412,6 +1465,12 @@ impl App {
             stale: Vec::new(),
             cols: 0,
             backdrop: None,
+            unders: std::collections::BTreeMap::new(),
+            swipe: None,
+            keyboard_visibility: None,
+            bottom_level: 0.0,
+            bottom_keyboard: None,
+            bottom_dock: None,
             corners: 0.0,
             dirty: true,
             w,
@@ -1518,9 +1577,10 @@ impl App {
                 || self.bar.moving(now)
                 || self.morph.is_some()
                 || self.turn.is_some()
+                || self.swipe.is_some()
                 || self.tab_motion.is_some()
+                || self.keyboard_visibility.is_some_and(|fade| fade.moving(now))
                 || self.row_press.is_some_and(|p| p.changing(now) || p.gone(now))
-                || self.row_squeeze_live(now)
                 || self.expressive.content_live(now)
                 || self.expressive.icon_live(now)
                 || self.glowing());
@@ -1558,7 +1618,7 @@ impl App {
     /// it is dimming, when it goes off.
     fn idle_due(&self) -> Option<u64> {
         let (active, after) = (self.active?, SCREEN_OFF[self.state.screen_off]?);
-        if !self.display_on {
+        if !self.display_on || self.script_has_keys() {
             return None;
         }
         Some(if self.bright.on { active + after - dim_span(after) } else { active + after })
@@ -1589,6 +1649,9 @@ impl App {
         {
             self.button = Some((key, Press::Spent));
             fx.extend(self.held_entry(i));
+        }
+        if self.script_has_keys() {
+            self.active = Some(now);
         }
         let active = *self.active.get_or_insert(now);
         if let (true, Some(after)) = (self.display_on, SCREEN_OFF[self.state.screen_off]) {
@@ -1625,8 +1688,12 @@ impl App {
             self.toast = None;
             self.dirty = true;
         }
-        if self.blink_at(now).is_some_and(|(on, _)| on != self.caret_shown) || self.morph.is_some()
-            || self.turn.is_some() || self.tab_motion.is_some()
+        if self.blink_at(now).is_some_and(|(on, _)| on != self.caret_shown)
+            || self.morph.is_some()
+            || self.turn.is_some()
+            || self.swipe.is_some()
+            || self.tab_motion.is_some()
+            || self.keyboard_visibility.is_some_and(|fade| fade.level(now) != self.bottom_level)
         {
             self.dirty = true;
         }
@@ -1725,6 +1792,13 @@ impl App {
         } else if self.vnc.as_ref().is_some_and(|link| link.generation() != self.vnc_seen) {
             self.vnc_seen = self.vnc.as_ref().map(|link| link.generation()).unwrap_or(0);
             self.dirty = true;
+        }
+        if let Some(link) = self.zt.clone() {
+            if link.poll() || link.generation() != self.zt_seen {
+                self.zt_seen = link.generation();
+                self.state.zt_status = link.status();
+                self.dirty = true;
+            }
         }
         if let Some(job) = self.agent.clone() {
             if job.generation() != self.agent_seen {

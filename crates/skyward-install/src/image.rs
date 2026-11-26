@@ -106,7 +106,7 @@ impl ImageKind {
     /// to, the likeliest first. A recovery that brings its own kernel can
     /// also be the boot image of a phone whose recovery lives in boot;
     /// without one it needs boot's.
-    fn partitions(self) -> &'static [&'static str] {
+    pub fn partitions(self) -> &'static [&'static str] {
         match self {
             ImageKind::Boot { kernel: true, ramdisk: Ramdisk::Recovery } => &["recovery", "boot"],
             ImageKind::Boot { kernel: false, ramdisk: Ramdisk::Recovery } => &["recovery"],
@@ -491,6 +491,47 @@ pub fn targets(kind: ImageKind, named: Option<&str>, dir: &Path, logical: &[Stri
         }
     }
     Ok(found)
+}
+
+/// Append explicit destinations after type and filename suggestions.
+pub fn add_manual_targets(dir: &Path, logical: &[String], found: &mut Vec<Target>) -> Result<()> {
+    use std::collections::BTreeSet;
+    use std::os::unix::fs::FileTypeExt;
+
+    let mut physical = BTreeSet::new();
+    for entry in std::fs::read_dir(dir).with_context(|| format!("list {}", dir.display()))? {
+        let entry = entry?;
+        if entry.path().metadata().is_ok_and(|metadata| metadata.file_type().is_block_device())
+            && let Ok(name) = entry.file_name().into_string()
+        {
+            physical.insert(name);
+        }
+    }
+    let mut extra = Vec::new();
+    for name in &physical {
+        if name == SUPER {
+            continue;
+        }
+        let place = if let Some(base) = name.strip_suffix("_a") {
+            if physical.contains(&format!("{base}_b")) {
+                extra.push(Target { name: base.into(), place: Place::Slotted });
+            }
+            continue;
+        } else if name.ends_with("_b") {
+            continue;
+        } else {
+            Place::Single
+        };
+        extra.push(Target { name: name.clone(), place });
+    }
+    extra.extend(logical.iter().map(|name| Target { name: name.clone(), place: Place::Logical }));
+    extra.sort_by(|a, b| a.name.cmp(&b.name));
+    for target in extra {
+        if !found.iter().any(|entry| entry.name == target.name) {
+            found.push(target);
+        }
+    }
+    Ok(())
 }
 
 /// Offer an exact filename match for a device-configured physical partition.

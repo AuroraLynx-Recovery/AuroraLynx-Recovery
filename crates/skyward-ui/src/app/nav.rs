@@ -30,10 +30,15 @@ impl App {
             return;
         }
         self.end_turn();
+        if self.state.appearance.reduce_motion {
+            self.shown = None;
+            return;
+        }
         let Some(view) = self.shown.take() else { return };
         let mut left = self.backdrop.take().unwrap_or_else(|| Canvas::new(self.w, self.h));
-        // The `<` comes up with the finger, before its page goes.
-        let view = View { pressing: None, ..view };
+        // The `<` comes up with the finger, before its page goes, and a
+        // press the page was showing is not left frozen in it.
+        let view = View { pressing: None, ripple: None, row: 0.0, ..view };
         let t = self.theme();
         self.paint_page(&mut left, &t, None, &view);
         // A page left within the first frames of sliding in, before it was
@@ -41,7 +46,7 @@ impl App {
         if let Some(fr) = self.frame.as_ref().filter(|_| self.cols < self.w) {
             left.fill_rect(self.cols as f32, 0.0, (self.w - self.cols) as f32, self.h as f32, fr.bg);
         }
-        self.turn = Some(Turn { back, left, spring: None });
+        self.turn = Some(Turn { depth: self.stack.len() - 1, back, left, spring: None });
         self.dirty = true;
     }
 
@@ -60,14 +65,11 @@ impl App {
         let target = if into { 1.0 } else { 0.0 };
         // The home page is the page shown, or the one under the search.
         let home = self.stack.len() - if into { 1 } else { 2 };
-        // On the way down the keyboard goes with the search page's frame.
-        let keyboard = if into { None } else { self.frame.as_ref().map(|fr| keyboard_strip(&self.theme(), fr)) };
         self.morph = Some(Morph {
             into,
             spring: Spring::new(now, (q - target) * 1000.0, speed * 1000.0, MORPH_PERIOD),
             start: now,
             scroll: self.stack[home].1,
-            keyboard,
             body: None,
             title,
             cancel,
@@ -288,6 +290,9 @@ impl App {
         fx
     }
 
+    /// Put the canvas a slide painted where it is useful: the page a page
+    /// was opened over, to show behind a swipe back; or, going back, only
+    /// the buffer the next painting reuses.
     /// What the page shown first asks of the runtime as it shows.
     pub fn arrive(&mut self) -> Vec<Effect> {
         self.arrive_at(self.screen())
@@ -320,6 +325,10 @@ impl App {
                 }
             }
             Screen::Agent => {
+                self.state.layer = Layer::Letters;
+                Vec::new()
+            }
+            Screen::ZeroTier => {
                 self.state.layer = Layer::Letters;
                 Vec::new()
             }
@@ -362,20 +371,20 @@ mod tests {
     #[test]
     fn rows_open_pages_and_back_returns() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Home, W, H, PPD);
-        tap(&mut app, &f, &i, Action::Open(Screen::Settings));
-        assert_eq!(app.screen(), Screen::Settings);
+        let mut app = App::new(Screen::Regular, W, H, PPD);
+        tap(&mut app, &f, &i, Action::Open(Screen::Install));
+        assert_eq!(app.screen(), Screen::Install);
         tap_back(&mut app, &f, &i, 0);
-        assert_eq!(app.screen(), Screen::Home);
+        assert_eq!(app.screen(), Screen::Regular);
         app.key(Key::Back, 0);
-        assert_eq!(app.screen(), Screen::Home, "back on the first page stays there");
+        assert_eq!(app.screen(), Screen::Regular, "back on a primary destination stays there");
     }
 
     #[test]
     fn the_back_control_stays_put_while_the_page_scrolls() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Home, W, H, PPD);
-        tap(&mut app, &f, &i, Action::Open(Screen::Settings));
+        let mut app = App::new(Screen::Regular, W, H, PPD);
+        tap(&mut app, &f, &i, Action::Open(Screen::Install));
         app.frame(&f, &i);
         app.touch(Touch::Down(700.0, 2400.0), &f, 0);
         app.touch(Touch::Move(700.0, 2200.0), &f, 0);
@@ -383,13 +392,13 @@ mod tests {
         app.touch(Touch::Up, &f, 0);
         assert_eq!(app.top().1, 300.0);
         tap_back(&mut app, &f, &i, 0);
-        assert_eq!(app.screen(), Screen::Home);
+        assert_eq!(app.screen(), Screen::Regular);
     }
 
     #[test]
     fn a_page_opened_slides_in_over_the_page_it_opens_from_and_back_off_it() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Home, W, H, PPD);
+        let mut app = App::new(Screen::Advanced, W, H, PPD);
         let mut c = Canvas::new(W, H);
         app.compose(&mut c, &f, &i, "12:00", 0);
         let home = shot(&c);
@@ -406,15 +415,21 @@ mod tests {
         assert!(app.turn.is_none(), "come to rest, the page left is let go");
         assert_ne!(app.deadline(3000), Some(0));
         let mount = shot(&c);
-        for y in [H / 3, H / 2, H - 200] {
+        for y in [H / 3, H / 2] {
             check_slide(&first, &mount, &home, y, (W, 0, 256));
             check_slide(&mid, &mount, &home, y, slid(false, 50));
+        }
+        let dock_y = H - app.theme().m.dp(92.0).round() as u32 + app.theme().m.dp(34.0).round() as u32;
+        let dock_pixel = ((dock_y * W + W / 2) * 4) as usize;
+        for shot in [&first, &mid, &mount] {
+            assert_eq!(&shot.data[dock_pixel..dock_pixel + 4], &home.data[dock_pixel..dock_pixel + 4],
+                "the foreground dock stays in place when the page opens");
         }
         let (front, _, _) = slid(false, 50);
         assert!((front as f32 / W as f32 - 0.728).abs() < 0.01, "about three quarters of the way in after 50 ms: {front}");
 
         tap_back(&mut app, &f, &i, 4000);
-        assert_eq!(app.screen(), Screen::Home);
+        assert_eq!(app.screen(), Screen::Advanced);
         app.compose(&mut c, &f, &i, "12:00", 4000);
         let first = shot(&c);
         app.compose(&mut c, &f, &i, "12:00", 4060);
@@ -422,16 +437,40 @@ mod tests {
         app.compose(&mut c, &f, &i, "12:00", 6000);
         assert!(app.turn.is_none());
         let home = shot(&c);
-        for y in [H / 3, H / 2, H - 200] {
+        for y in [H / 3, H / 2] {
             check_slide(&first, &mount, &home, y, (0, W / 4, ((1.0 - BEHIND_DIM) * 256.0).round() as u32));
             check_slide(&mid, &mount, &home, y, slid(true, 60));
         }
     }
 
     #[test]
+    fn expressive_edge_swipe_previews_then_cancels_or_commits() {
+        let (f, i) = (fonts(), info());
+        let mut app = App::new(Screen::Advanced, W, H, PPD);
+        app.state.style = UiStyle::MaterialExpressive;
+        let mut c = Canvas::new(W, H);
+        app.compose(&mut c, &f, &i, "12:00", 0);
+        tap_at(&mut app, &f, &i, Action::Open(Screen::Mount), 1000);
+        app.compose(&mut c, &f, &i, "12:00", 1000);
+        app.compose(&mut c, &f, &i, "12:00", 2000);
+        for (start, travel, screen) in [(2200, 80.0, Screen::Mount), (3400, 450.0, Screen::Advanced)] {
+            let y = H as f32 / 2.0;
+            app.touch(Touch::Down(10.0, y), &f, start);
+            app.touch(Touch::Move(45.0, y), &f, start + 8);
+            app.touch(Touch::Move(travel, y), &f, start + 16);
+            assert!(app.swipe.is_some(), "a preview is active during the gesture");
+            app.compose(&mut c, &f, &i, "12:00", start + 16);
+            app.touch(Touch::Up, &f, start + 24);
+            assert_eq!(app.screen(), screen);
+            app.compose(&mut c, &f, &i, "12:00", start + 1000);
+            assert!(app.swipe.is_none());
+        }
+    }
+
+    #[test]
     fn a_page_sliding_has_its_leading_corners_rounded_as_the_screens_are() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Home, W, H, PPD);
+        let mut app = App::new(Screen::Advanced, W, H, PPD);
         app.set_screen_corners(140.0);
         let mut c = Canvas::new(W, H);
         app.compose(&mut c, &f, &i, "12:00", 0);
@@ -444,7 +483,7 @@ mod tests {
         let mount = shot(&c);
         let (front, behind, keep) = slid(false, 50);
         let at = |c: &Canvas, x: u32, y: u32| c.data[((y * W + x) * 4) as usize] as u32;
-        let y = H - 3;
+        let y = 3;
         assert_eq!(at(&mid, front + 5, y), (at(&home, front + 5 + behind, y) * keep) >> 8, "the corner's tip shows the page behind");
         assert_eq!(at(&mid, front + 140, y), at(&mount, 140, y), "past the corner's curve the page in front is whole");
         assert_eq!(at(&mid, front + 5, H / 2), at(&mount, 5, H / 2), "between the corners its edge is straight");
@@ -453,7 +492,7 @@ mod tests {
     #[test]
     fn a_finger_brings_a_sliding_page_to_rest_and_a_page_never_shown_gives_way_at_once() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Home, W, H, PPD);
+        let mut app = App::new(Screen::Advanced, W, H, PPD);
         let mut c = Canvas::new(W, H);
         app.compose(&mut c, &f, &i, "12:00", 0);
         tap_at(&mut app, &f, &i, Action::Open(Screen::Mount), 1000);
@@ -466,31 +505,36 @@ mod tests {
         // stands: what replaces it shows at once.
         app.refresh();
         tap_back(&mut app, &f, &i, 2000);
-        assert_eq!(app.screen(), Screen::Home);
+        assert_eq!(app.screen(), Screen::Advanced);
         assert!(app.turn.is_none());
     }
 
+    /// A finger in from the left edge, `travel` pixels across, on the page
     #[test]
     fn every_unfinished_entry_now_opens_its_page() {
         let (f, i) = (fonts(), DeviceInfo { slot: Some(Slot::B), ..info() });
         let routes: [(Screen, Screen); 13] = [
             (Screen::Home, Screen::Search),
-            (Screen::Home, Screen::Backup),
-            (Screen::Home, Screen::Restore),
-            (Screen::Home, Screen::Advanced),
+            (Screen::Regular, Screen::Backup),
+            (Screen::Regular, Screen::Restore),
+            (Screen::Regular, Screen::Install),
             (Screen::Advanced, Screen::Files),
             (Screen::Advanced, Screen::Terminal),
             (Screen::Advanced, Screen::Logs),
-            (Screen::Settings, Screen::Language),
-            (Screen::Settings, Screen::TimeZone),
-            (Screen::Settings, Screen::Terminal),
+            (Screen::LocalePreferences, Screen::Language),
+            (Screen::LocalePreferences, Screen::TimeZone),
+            (Screen::Settings, Screen::Appearance),
             (Screen::About, Screen::Logs),
             (Screen::Specs, Screen::License),
             (Screen::Specs, Screen::FontLicense),
         ];
         for (from, to) in routes {
             let mut app = App::new(from, W, H, PPD);
-            tap(&mut app, &f, &i, Action::Open(to));
+            if to == Screen::Search {
+                tap_button(&mut app, &f, &i, 0);
+            } else {
+                tap(&mut app, &f, &i, Action::Open(to));
+            }
             assert_eq!(app.screen(), to, "from {from:?}");
         }
         let mut app = App::new(Screen::Reboot, W, H, PPD);

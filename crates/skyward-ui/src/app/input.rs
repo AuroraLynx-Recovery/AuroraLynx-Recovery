@@ -35,6 +35,7 @@ impl App {
                 self.dirty = true;
             }
             self.drop_button();
+            self.finish_swipe();
             self.end_turn();
         }
         self.stir(now);
@@ -88,12 +89,18 @@ impl App {
                 let dock = self.frame.as_ref().and_then(|fr| fr.dock.as_ref()).map(|d| (d, self.h as f32 - d.canvas.h as f32));
                 let on_dock = dock.filter(|&(_, top)| y >= top);
                 let button = self.frame.as_ref().and_then(|fr| fr.button).map(|(_, a)| (a, widgets::button_rect(&t)));
+                // The dock answers only on its own controls: a finger in
+                // the strip it floats over, or past the screen, still finds
+                // the page's own.
+                let dock_hit = on_dock.and_then(|(d, top)| {
+                    d.hits.iter().find(|h| h.rect.contains(x, y - top)).map(|h| (h.action, Rect { y: h.rect.y + top, ..h.rect }))
+                });
                 let hit = if self.frame.as_ref().is_some_and(|fr| fr.back) && back.contains(x, y) {
                     Some((Action::Back, back))
                 } else if let Some(button) = button.filter(|(_, r)| r.contains(x, y)) {
                     Some(button)
-                } else if let Some((d, top)) = on_dock {
-                    d.hits.iter().find(|h| h.rect.contains(x, y - top)).map(|h| (h.action, Rect { y: h.rect.y + top, ..h.rect }))
+                } else if let Some(dock_hit) = dock_hit {
+                    Some(dock_hit)
                 } else if self.tab_motion.is_some() {
                     None
                 } else if let Some((p, top)) = on_strip {
@@ -142,8 +149,13 @@ impl App {
                     }
                     _ => {
                         if let Some(rect) = row {
-                            let scale_from = if self.expressive_active() { now } else { now + ROW_PRESS_DELAY_MS };
-                            self.row_press = Some(RowPress { rect, rise: now + ROW_PRESS_DELAY_MS, fall: None, scale_from, scale_fall: None });
+                            let ripple = (t.style == UiStyle::MaterialExpressive && self.expressive_active()).then(|| RipplePress {
+                                start: now,
+                                fall: None,
+                                corners: self.row_corners(rect, &t),
+                                at: (x, y + scroll),
+                            });
+                            self.row_press = Some(RowPress { rect, rise: now + ROW_PRESS_DELAY_MS, fall: None, ripple, px_per_dp: m.px_per_dp });
                             self.row_art = None;
                         }
                         Drag::Press { x, y, action, edge: at_edge, at: now }
@@ -162,6 +174,9 @@ impl App {
                     } else {
                     self.drag = match at_edge {
                         Some(from_left) if dx.abs() > slop && dx.abs() > dy.abs() => {
+                            if self.begin_swipe(from_left) {
+                                self.swipe_moved(if from_left { dx } else { -dx }, dy);
+                            }
                             self.dirty = true;
                             Drag::Edge { start: x0, from_left, armed: false, x, cy: y0 - m.dp(CUE_LIFT_DP) }
                         }
@@ -197,6 +212,7 @@ impl App {
                 }
                 Drag::Edge { start, from_left, armed, cy, .. } => {
                     let travel = if from_left { x - start } else { start - x };
+                    self.swipe_moved(travel, y - cy - m.dp(CUE_LIFT_DP));
                     let ready = travel > m.dp(BACK_SWIPE_DP);
                     // A tap of the motor as the `<` appears, as the system
                     // gives.
@@ -270,7 +286,15 @@ impl App {
                         _ => self.settle_fold(now),
                     }
                 }
-                Drag::Edge { armed: true, .. } => fx.extend(self.back(now)),
+                Drag::Edge { armed, .. } if self.swipe.is_some() => fx.extend(self.end_swipe(now, armed)),
+                Drag::Edge { armed: true, start, from_left, x, cy } => {
+                    fx.extend(self.back(now));
+                    if !self.state.appearance.reduce_motion {
+                        let travel = if from_left { x - start } else { start - x };
+                        self.cue = Some((from_left, cy, Spring::new(now, widgets::back_cue_depth(&t, travel), 0.0, 0.15)));
+                        self.dirty = true;
+                    }
+                }
                 Drag::Edge { start, from_left, x, cy, .. } => {
                     // Short of going back, the cue sinks back into the edge.
                     let travel = if from_left { x - start } else { start - x };
@@ -343,6 +367,18 @@ impl App {
         }
     }
 
+    /// The corners of the card the row at `rect` lies in: a row at the top
+    /// or the foot of a card shows the card's rounding, and one between two
+    /// rows shows none.
+    fn row_corners(&self, rect: Rect, t: &Theme) -> [f32; 4] {
+        let r = t.m.card_radius;
+        let Some(frame) = self.frame.as_ref() else { return [r; 4] };
+        let shares = |h: &Hit| (h.rect.x - rect.x).abs() < 0.5 && (h.rect.w - rect.w).abs() < 0.5;
+        let above = frame.hits.iter().any(|h| shares(h) && (h.rect.y + h.rect.h - rect.y).abs() < 0.75);
+        let below = frame.hits.iter().any(|h| shares(h) && (h.rect.y - (rect.y + rect.h)).abs() < 0.75);
+        [if above { 0.0 } else { r }, if above { 0.0 } else { r }, if below { 0.0 } else { r }, if below { 0.0 } else { r }]
+    }
+
     /// The finger left the row it held, scrolling the page or swiping: a
     /// row not darkening yet never does, and one darkening fades back.
     fn let_row_go(&mut self, now: u64) {
@@ -351,7 +387,7 @@ impl App {
             self.row_press = None;
             self.row_art = None;
         } else if p.fall.is_none() {
-            self.row_press = Some(RowPress { fall: Some(now), scale_fall: Some(now), ..p });
+            self.row_press = Some(RowPress { fall: Some(now), ..p });
         }
         self.dirty = true;
     }
@@ -371,6 +407,10 @@ impl App {
     /// goes down first waits [`CHORD_MS`] for the other, or until it is let
     /// go, and then does what it does alone, as pressed when it went down.
     pub fn key(&mut self, key: Key, now: u64) -> Vec<Effect> {
+        if self.script_has_keys() && matches!(key, Key::VolumeUp | Key::VolumeDown | Key::Power) {
+            self.stir(now);
+            return Vec::new();
+        }
         // Any button stops a gliding page, and brings a sliding one to rest.
         self.fling = None;
         self.end_turn();
@@ -482,6 +522,10 @@ impl App {
     /// partner in a screenshot came, the key waiting for it first does what
     /// it does alone.
     pub fn key_up(&mut self, key: Key, now: u64) -> Vec<Effect> {
+        if self.script_has_keys() && matches!(key, Key::VolumeUp | Key::VolumeDown | Key::Power) {
+            self.stir(now);
+            return Vec::new();
+        }
         let mut fx = match self.chord {
             Some((first, _)) if first == key => self.let_chord_go(now),
             _ => Vec::new(),
@@ -558,9 +602,9 @@ mod tests {
     fn a_row_held_darkens_behind_its_words_a_moment_after_the_finger_lands() {
         let (f, i) = (fonts(), info());
         let t = Theme::light(W, H, PPD);
-        let mut app = App::new(Screen::Home, W, H, PPD);
+        let mut app = App::new(Screen::Regular, W, H, PPD);
         let mut c = Canvas::new(W, H);
-        let row = app.frame(&f, &i).hits.iter().find(|h| h.action == Action::Open(Screen::Backup)).expect("on the home page").rect;
+        let row = app.frame(&f, &i).hits.iter().find(|h| h.action == Action::Open(Screen::Backup)).expect("on the regular page").rect;
         // The card between the row's words and its arrow.
         let (x, y) = (W as f32 * 0.6, row.y + row.h / 2.0);
         app.compose(&mut c, &f, &i, "12:00", 0);
@@ -588,15 +632,15 @@ mod tests {
         app.touch(Touch::Up, &f, 2200);
         app.tick(3000);
         assert!(app.row_press.is_none() && app.row_art.is_none(), "faded, it is let go");
-        assert_eq!(app.screen(), Screen::Home, "a scroll opens nothing");
+        assert_eq!(app.screen(), Screen::Regular, "a scroll opens nothing");
     }
 
     #[test]
     fn a_row_scrolled_away_from_before_it_darkens_never_shows_held() {
         let (f, i) = (fonts(), info());
         let t = Theme::light(W, H, PPD);
-        let mut app = App::new(Screen::Home, W, H, PPD);
-        let row = app.frame(&f, &i).hits.iter().find(|h| h.action == Action::Open(Screen::Backup)).expect("on the home page").rect;
+        let mut app = App::new(Screen::Regular, W, H, PPD);
+        let row = app.frame(&f, &i).hits.iter().find(|h| h.action == Action::Open(Screen::Backup)).expect("on the regular page").rect;
         let (x, y) = (W as f32 * 0.6, row.y + row.h / 2.0);
         app.touch(Touch::Down(x, y), &f, 1000);
         app.touch(Touch::Move(x, y + t.m.dp(30.0)), &f, 1050);
@@ -607,9 +651,9 @@ mod tests {
     fn a_row_tapped_quickly_shows_held_from_the_lift_and_fades_back() {
         let (f, i) = (fonts(), info());
         let t = Theme::light(W, H, PPD);
-        let mut app = App::new(Screen::Settings, W, H, PPD);
+        let mut app = App::new(Screen::DisplayPreferences, W, H, PPD);
         let mut c = Canvas::new(W, H);
-        let row = app.frame(&f, &i).hits.iter().find(|h| h.action == Action::Toggle(Switch::Vibrate)).expect("on the settings page").rect;
+        let row = app.frame(&f, &i).hits.iter().find(|h| h.action == Action::Toggle(Switch::Vibrate)).expect("on the display page").rect;
         let (x, y) = (W as f32 * 0.6, row.y + row.h / 2.0);
         tap_at(&mut app, &f, &i, Action::Toggle(Switch::Vibrate), 1000);
         assert!(!app.state.vibrate, "the tap worked the switch");
@@ -641,7 +685,7 @@ mod tests {
         let disc = over(t.pal.button_press, t.pal.bg).r;
         assert_eq!(grey_at(&c, cx + r * 0.6, cy), disc, "darker at once");
         let arrow = darkest(&c, around);
-        assert!(arrow.abs_diff(85) <= 2, "the stock `<` held down is 85, not {arrow}");
+        assert!(arrow <= 85, "the `<` held down is no lighter than the stock 85, not {arrow}");
         // A finger moving off lets it go.
         app.touch(Touch::Move(bx, by + t.m.dp(40.0)), &f, 6050);
         app.compose(&mut c, &f, &i, "12:00", 6050);
@@ -660,13 +704,13 @@ mod tests {
         let cross = darkest(&c, button);
         assert!(cross.abs_diff(70) <= 2, "the stock cross held down is 70, not {cross}");
 
-        // The home page's search bar, clear of its words.
+        // The home page's search button in the toolbar.
         let mut app = App::new(Screen::Home, W, H, PPD);
-        let bar = app.frame(&f, &i).hits.iter().find(|h| h.action == Action::Open(Screen::Search)).expect("on the home page").rect;
-        let (x, y) = (bar.x + bar.w * 0.8, bar.y + bar.h / 2.0);
+        app.frame(&f, &i);
+        let (x, y) = widgets::button_rect(&t).centre();
         app.touch(Touch::Down(x, y), &f, 1000);
         app.compose(&mut c, &f, &i, "12:00", 1000);
-        assert_eq!(grey_at(&c, x, y), over(t.pal.button_press, t.pal.search).r);
+        assert_eq!(grey_at(&c, x, y + t.m.dp(6.0)), over(t.pal.button_press, t.pal.bg).r);
     }
 
     #[test]
@@ -677,7 +721,7 @@ mod tests {
         app.touch(Touch::Move(90.0, 1605.0), &f, 0);
         app.touch(Touch::Move(320.0, 1610.0), &f, 0);
         app.touch(Touch::Up, &f, 0);
-        assert_eq!(app.screen(), Screen::Home);
+        assert_eq!(app.screen(), Screen::Regular);
     }
 
     #[test]

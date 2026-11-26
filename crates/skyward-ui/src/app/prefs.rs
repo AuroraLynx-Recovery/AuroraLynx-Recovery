@@ -30,6 +30,7 @@ pub enum Switch {
     /// over.
     KeepRecovery,
     Wlan,
+    Mobile,
     /// Show the password typed rather than a dot for each character.
     ShowPassword,
     /// Keep the time zone the installed system is set to.
@@ -433,7 +434,7 @@ mod tests {
     #[test]
     fn theme_previews_switch_the_theme() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Settings, W, H, PPD);
+        let mut app = App::new(Screen::Appearance, W, H, PPD);
         tap(&mut app, &f, &i, Action::Theme { dark: true });
         assert!(app.state.dark);
         assert!(app.theme().dark);
@@ -444,7 +445,7 @@ mod tests {
     #[test]
     fn the_style_picker_keeps_the_light_or_dark_choice() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Settings, W, H, PPD);
+        let mut app = App::new(Screen::Appearance, W, H, PPD);
         app.state.dark = true;
         tap(&mut app, &f, &i, Action::Style(UiStyle::MaterialExpressive));
         assert_eq!(app.theme().style, UiStyle::MaterialExpressive);
@@ -464,7 +465,7 @@ mod tests {
     #[test]
     fn dragging_the_track_sets_brightness() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Settings, W, H, PPD);
+        let mut app = App::new(Screen::DisplayPreferences, W, H, PPD);
         let track = app.frame(&f, &i).hits.iter().find(|h| h.action == Action::Slider(Slider::Brightness)).unwrap().rect;
         let y = track.centre().1 - app.top().1;
         assert!(app.touch(Touch::Down(track.x + track.w * 0.25, y), &f, 0).is_empty());
@@ -478,7 +479,7 @@ mod tests {
     #[test]
     fn the_strength_slider_taps_the_motor_as_strongly_as_it_is_let_go() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Settings, W, H, PPD);
+        let mut app = App::new(Screen::DisplayPreferences, W, H, PPD);
         let track = app.frame(&f, &i).hits.iter().find(|h| h.action == Action::Slider(Slider::Vibration)).unwrap().rect;
         let y = track.centre().1 - app.top().1;
         assert!(app.touch(Touch::Down(track.x + track.w * 0.25, y), &f, 0).is_empty());
@@ -497,6 +498,7 @@ mod tests {
     fn the_language_chosen_is_spoken_on_every_page() {
         let (f, i) = (fonts(), info());
         let mut app = opened(Screen::Settings, &f, &i);
+        tap(&mut app, &f, &i, Action::Open(Screen::LocalePreferences));
         tap(&mut app, &f, &i, Action::Open(Screen::Language));
         assert_eq!(app.frame(&f, &i).title, "语言");
         tap(&mut app, &f, &i, Action::Language(Lang::En));
@@ -506,7 +508,7 @@ mod tests {
         assert_eq!(app.frame(&f, &i).title, "語言");
         tap_back(&mut app, &f, &i, 0);
         app.tick(1000);
-        assert_eq!((app.screen(), app.frame(&f, &i).title), (Screen::Settings, "設定"), "and so does the page gone back to");
+        assert_eq!(app.screen(), Screen::LocalePreferences, "and so does the page gone back to");
         app.set_mounts(Ok(vec![MountRow { base: "odm".into(), point: "/odm".into(), mounted: true, holders: vec!["qseecomd".into()] }]));
         tap(&mut app, &f, &i, Action::Open(Screen::Language));
         tap(&mut app, &f, &i, Action::Language(Lang::En));
@@ -514,6 +516,7 @@ mod tests {
         app.tick(2000);
         tap_back(&mut app, &f, &i, 2000);
         app.tick(3000);
+        tap(&mut app, &f, &i, Action::SelectTab(Screen::Advanced));
         tap(&mut app, &f, &i, Action::Open(Screen::Mount));
         tap(&mut app, &f, &i, Action::Unavailable("A partition in use can't be unmounted"));
         assert_eq!(app.toast.as_ref().map(|t| t.0.as_str()), Some("A partition in use can't be unmounted"), "as do its messages");
@@ -525,6 +528,7 @@ mod tests {
         let mut app = opened(Screen::Settings, &f, &i);
         app.take_settings(None, Some(Lang::Hant));
         assert_eq!((app.state.lang, app.settings().language), (Lang::Hant, None), "the system's, until one is chosen");
+        tap(&mut app, &f, &i, Action::Open(Screen::LocalePreferences));
         tap(&mut app, &f, &i, Action::Open(Screen::Language));
         tap(&mut app, &f, &i, Action::Language(Lang::En));
         let kept = app.settings();
@@ -553,7 +557,7 @@ mod tests {
     #[test]
     fn the_other_pages_choices_are_kept_too() {
         let (f, i) = (fonts(), info());
-        let mut app = opened(Screen::Settings, &f, &i);
+        let mut app = App::new(Screen::DisplayPreferences, W, H, PPD);
         tap(&mut app, &f, &i, Action::Toggle(Switch::Vibrate));
         app.state.check_signature = true;
         app.state.backup_to = Place::UsbDrive;
@@ -599,7 +603,7 @@ mod tests {
     #[test]
     fn a_time_zone_chosen_from_its_part_of_the_world_is_the_one_kept() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Settings, W, H, PPD);
+        let mut app = App::new(Screen::LocalePreferences, W, H, PPD);
         app.set_now(WINTER);
         tap(&mut app, &f, &i, Action::Open(Screen::TimeZone));
         assert_eq!(app.state.time_zone, zone("Asia/Shanghai"), "China until another is chosen");
@@ -687,7 +691,7 @@ mod tests {
     #[test]
     fn choosing_how_long_the_screen_stays_on() {
         let (f, i) = (fonts(), info());
-        let mut app = opened(Screen::Settings, &f, &i);
+        let mut app = App::new(Screen::DisplayPreferences, W, H, PPD);
         tap(&mut app, &f, &i, Action::Open(Screen::ScreenOff));
         assert_eq!(app.screen(), Screen::ScreenOff);
         let frame = app.frame(&f, &i);

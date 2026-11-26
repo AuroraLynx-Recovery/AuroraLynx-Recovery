@@ -134,7 +134,7 @@ mod tests {
         assert_eq!(app.screen(), Screen::Home);
         app.key(Key::Back, 0);
         assert_eq!(app.screen(), Screen::Home, "fastboot is not behind it");
-        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::Search))), "the keys go on working the pages");
+        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::Update))), "the keys go on working the pages");
         app.touch(Touch::Down(W as f32 / 2.0, 200.0), &f, 0);
         app.touch(Touch::Up, &f, 0);
         assert_eq!(press(&mut app, Key::Power, 0), vec![Effect::Ticks]);
