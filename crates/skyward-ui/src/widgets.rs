@@ -1005,7 +1005,7 @@ fn chip(t: &Theme, (cx, cy, r): (f32, f32, f32)) -> (Canvas, i32, i32) {
     let mut c = Canvas::new(size, size);
     let (cx, cy) = (cx - x0 as f32, cy - y0 as f32);
     if t.style == UiStyle::MaterialExpressive {
-        c.fill_circle(cx, cy, r, t.pal.track);
+        c.fill_circle(cx, cy, r, t.pal.card);
         return (c, x0, y0);
     }
     for py in 0..size as i32 {
@@ -1435,7 +1435,7 @@ pub fn text_field(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, text: &str) ->
     let caret = caret_over(at, |art, dx, dy| {
         draw_text_field(art, t, f, t.m.margin - dx, top - dy, text, true);
     });
-    (top + t.m.dp(56.0), caret)
+    (top + t.m.dp(56.0) + t.m.card_gap, caret)
 }
 
 /// Draw the text field's card from `x0`, `top`, with its cursor if

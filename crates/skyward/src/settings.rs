@@ -9,6 +9,7 @@ use skyward_block::mount;
 use skyward_ui::settings::{Kept, Settings};
 use std::fs::{self, File};
 use std::io::{ErrorKind, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 const METADATA: &str = "/metadata";
@@ -57,7 +58,7 @@ pub fn write(settings: &Settings) -> Result<()> {
 
 fn write_file(settings: &Settings) -> Result<()> {
     fs::create_dir_all(FOLDER).with_context(|| format!("make {FOLDER}"))?;
-    let mut file = File::create(WRITING).with_context(|| format!("make {WRITING}"))?;
+    let mut file = fs::OpenOptions::new().create(true).truncate(true).write(true).mode(0o600).open(WRITING).with_context(|| format!("make {WRITING}"))?;
     file.write_all(settings.text().as_bytes()).with_context(|| format!("write {WRITING}"))?;
     file.sync_all().with_context(|| format!("write {WRITING}"))?;
     fs::rename(WRITING, FILE).with_context(|| format!("move {WRITING} over {FILE}"))?;

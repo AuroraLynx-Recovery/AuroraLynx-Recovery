@@ -3776,10 +3776,32 @@ pub fn file_job(cx: &Ctx) -> Frame {
 /// A remote picture. Disconnected, the address and password; connected, the
 /// framebuffer, with touch on the picture and the keyboard for the remote
 /// desktop when that field is chosen.
+fn connection_list(c: &mut Canvas, cx: &Ctx, top: f32, kind: u8, out: &mut Vec<Hit>) -> f32 {
+    let (t, f, s) = (cx.t, cx.f, cx.state);
+    let zh = matches!(s.lang, Lang::Hans | Lang::Hant);
+    let labels: Vec<String> = s.connections.iter().filter(|entry| entry.kind == kind)
+        .map(|entry| if entry.model.is_empty() { entry.address.clone() } else { format!("{} · {}", entry.address, entry.model) }).collect();
+    let mut rows: Vec<Row> = labels.iter().map(|label| Row::new(label)).collect();
+    let mut actions: Vec<Action> = s.connections.iter().enumerate().filter(|(_, entry)| entry.kind == kind)
+        .map(|(i, _)| Action::LoadConnection(i)).collect();
+    for (label, action) in [
+        (if zh { "新增配置" } else { "New connection" }, Action::NewConnection(kind)),
+        (if zh { "保存当前配置" } else { "Save current connection" }, Action::SaveConnection(kind)),
+        (if zh { "删除当前保存项" } else { "Delete saved connection" }, Action::DeleteConnection(kind)),
+    ] {
+        rows.push(Row::new(label));
+        actions.push(action);
+    }
+    let list = widgets::list(c, t, f, top, &rows);
+    out.extend(hits(&list.rows, &actions));
+    list.bottom + t.m.card_gap
+}
+
 fn vnc(cx: &Ctx) -> Frame {
     let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
-    let mut c = page(cx);
+    let mut c = long_page(cx);
     let mut out = Vec::new();
+    let mut caret = None;
     let top = t.m.content_top;
     let picture = cx.vnc.and_then(|link| link.picture());
     let live = cx.vnc.is_some_and(|link| !matches!(link.phase(), crate::vncview::Phase::Failed(_)));
@@ -3810,13 +3832,16 @@ fn vnc(cx: &Ctx) -> Frame {
             keyboard_hits(&mut c, t, f, s, l.pick(texts::keyboard::ENTER), &mut out);
         }
     } else {
-        let mut y = widgets::paragraph(&mut c, t, f, top, l.pick(texts::vnc::HOST));
+        let profile_bottom = connection_list(&mut c, cx, top, 1, &mut out);
+        let mut y = widgets::paragraph(&mut c, t, f, profile_bottom, l.pick(texts::vnc::HOST));
         let host = Rect::new(t.m.margin, y, t.m.w as f32 - t.m.margin * 2.0, t.m.dp(56.0));
-        let (y_after, _) = widgets::text_field(&mut c, t, f, y, &s.vnc_host);
+        let (y_after, host_caret) = widgets::text_field(&mut c, t, f, y, &s.vnc_host);
+        if s.vnc_field == 0 { caret = Some(host_caret); }
         out.push(Hit { rect: host, action: Action::VncField(0) });
         y = widgets::paragraph(&mut c, t, f, y_after, l.pick(texts::vnc::PASSWORD));
         let password = Rect::new(t.m.margin, y, t.m.w as f32 - t.m.margin * 2.0, t.m.dp(56.0));
-        let (y_after, _) = widgets::text_field(&mut c, t, f, y, &s.vnc_password);
+        let (y_after, password_caret) = widgets::text_field(&mut c, t, f, y, &s.vnc_password);
+        if s.vnc_field == 1 { caret = Some(password_caret); }
         out.push(Hit { rect: password, action: Action::VncField(1) });
         let connect = widgets::list(&mut c, t, f, y_after, &[Row::new(l.pick(texts::vnc::CONNECT))]);
         out.extend(hits(&connect.rows, &[Action::VncConnect]));
@@ -3835,7 +3860,7 @@ fn vnc(cx: &Ctx) -> Frame {
         }
         keyboard_hits(&mut c, t, f, s, l.pick(texts::vnc::CONNECT), &mut out);
     }
-    Frame::new(t, c, out, l.pick(texts::page::VNC), top)
+    Frame { caret, ..Frame::new(t, c, out, l.pick(texts::page::VNC), top) }
 }
 
 /// Chat with an OpenAI-compatible API. The address, model and key sit at
@@ -3845,18 +3870,23 @@ fn agent(cx: &Ctx) -> Frame {
     let m = &t.m;
     let mut c = long_page(cx);
     let mut out = Vec::new();
+    let mut caret = None;
     let top = m.content_top;
     let field = |y: f32| Rect::new(m.margin, y, m.w as f32 - m.margin * 2.0, m.dp(56.0));
-    let mut y = widgets::paragraph(&mut c, t, f, top, l.pick(texts::agent::URL));
-    let (y_after, _) = widgets::text_field(&mut c, t, f, y, &s.agent_url);
+    let profile_bottom = connection_list(&mut c, cx, top, 0, &mut out);
+    let mut y = widgets::paragraph(&mut c, t, f, profile_bottom, l.pick(texts::agent::URL));
+    let (y_after, url_caret) = widgets::text_field(&mut c, t, f, y, &s.agent_url);
+    if s.agent_field == 0 { caret = Some(url_caret); }
     out.push(Hit { rect: field(y), action: Action::AgentField(0) });
     y = widgets::paragraph(&mut c, t, f, y_after, l.pick(texts::agent::MODEL));
-    let (y_after, _) = widgets::text_field(&mut c, t, f, y, &s.agent_model);
+    let (y_after, model_caret) = widgets::text_field(&mut c, t, f, y, &s.agent_model);
+    if s.agent_field == 1 { caret = Some(model_caret); }
     out.push(Hit { rect: field(y), action: Action::AgentField(1) });
     y = widgets::paragraph(&mut c, t, f, y_after, l.pick(texts::agent::KEY));
     let shown = "•".repeat(s.agent_key.chars().count());
     let key_top = y;
-    let (after_key, _) = widgets::text_field(&mut c, t, f, y, &shown);
+    let (after_key, key_caret) = widgets::text_field(&mut c, t, f, y, &shown);
+    if s.agent_field == 2 { caret = Some(key_caret); }
     out.push(Hit { rect: field(key_top), action: Action::AgentField(2) });
     y = widgets::footnote(&mut c, t, f, after_key, l.pick(texts::agent::NOTE));
     for line in &s.agent_chat {
@@ -3871,12 +3901,13 @@ fn agent(cx: &Ctx) -> Frame {
         y = widgets::footnote(&mut c, t, f, y, l.pick(texts::agent::WORKING));
     }
     y = widgets::paragraph(&mut c, t, f, y, l.pick(texts::agent::DRAFT));
-    let (y_after, caret) = widgets::text_field(&mut c, t, f, y, &s.agent_draft);
+    let (y_after, draft_caret) = widgets::text_field(&mut c, t, f, y, &s.agent_draft);
+    if s.agent_field == 3 { caret = Some(draft_caret); }
     out.push(Hit { rect: field(y), action: Action::AgentField(3) });
     let send = widgets::list(&mut c, t, f, y_after, &[Row::new(l.pick(texts::agent::SEND))]);
     out.extend(hits(&send.rows, &[Action::AgentSend]));
     keyboard_hits(&mut c, t, f, s, l.pick(texts::agent::SEND), &mut out);
-    Frame { caret: Some(caret), ..Frame::new(t, fit(c, t, send.bottom), out, l.pick(texts::page::AGENT), top) }
+    Frame { caret, ..Frame::new(t, fit(c, t, send.bottom), out, l.pick(texts::page::AGENT), top) }
 }
 
 /// Join Aurora 互联's ZeroTier network. The node identity is reused from
@@ -3887,7 +3918,8 @@ fn zerotier(cx: &Ctx) -> Frame {
     let mut c = long_page(cx);
     let mut out = Vec::new();
     let top = m.content_top;
-    let mut y = widgets::paragraph(&mut c, t, f, top, l.pick(texts::zerotier::NETWORK));
+    let profile_bottom = connection_list(&mut c, cx, top, 2, &mut out);
+    let mut y = widgets::paragraph(&mut c, t, f, profile_bottom, l.pick(texts::zerotier::NETWORK));
     let (y_after, caret) = widgets::text_field(&mut c, t, f, y, &s.zt_network);
     let connected = s.zt_status.state == "online" || s.zt_status.state == "connecting" || s.zt_status.state == "retrying";
     let action = if connected {

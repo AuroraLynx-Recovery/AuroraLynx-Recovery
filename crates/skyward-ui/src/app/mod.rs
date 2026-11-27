@@ -473,6 +473,10 @@ pub enum Action {
     /// Which field the assistant page types into: 0 address, 1 model, 2 key, 3 the message.
     AgentField(u8),
     /// Send the typed message to the API.
+    SaveConnection(u8),
+    LoadConnection(usize),
+    DeleteConnection(u8),
+    NewConnection(u8),
     AgentSend,
     ZeroTierJoin,
     ZeroTierLeave,

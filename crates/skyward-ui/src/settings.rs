@@ -67,9 +67,21 @@ pub struct Settings {
     pub agent_key: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub zt_network: String,
+    pub connections: Vec<Connection>,
+    pub vnc_host: String,
+    pub vnc_password: String,
     pub install: Install,
     pub backup: Backup,
     pub logs: Logs,
+}
+
+/// Saved connection details. Credentials remain in recovery's private settings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Connection {
+    pub kind: u8,
+    pub address: String,
+    pub model: String,
+    pub secret: String,
 }
 
 /// The install page's options.
@@ -148,6 +160,9 @@ impl Settings {
             vibrate: state.vibrate,
             vibration: state.vibration,
             file_transfer: state.file_transfer,
+            connections: state.connections.clone(),
+            vnc_host: state.vnc_host.clone(),
+            vnc_password: state.vnc_password.clone(),
             agent_url: state.agent_url.clone(),
             agent_model: state.agent_model.clone(),
             agent_key: state.agent_key.clone(),
@@ -216,6 +231,9 @@ impl Settings {
             state.vibration = self.vibration;
         }
         state.file_transfer = self.file_transfer;
+        state.connections = self.connections.clone();
+        state.vnc_host = self.vnc_host.clone();
+        state.vnc_password = self.vnc_password.clone();
         state.agent_url = self.agent_url.clone();
         state.agent_model = self.agent_model.clone();
         state.agent_key = self.agent_key.clone();
@@ -483,5 +501,28 @@ mod tests {
         keeper.remade();
         keeper.due(dark.clone(), 20_000);
         assert_eq!(keeper.due(dark.clone(), 22_000), Some(dark), "erasing takes the file with it, so it is written again");
+    }
+}
+
+#[cfg(test)]
+mod connection_tests {
+    use super::*;
+    #[test]
+    fn multiple_connections_and_current_credentials_survive_restart() {
+        let mut state = State::default();
+        state.agent_url = "https://provider.test/v1".into();
+        state.agent_model = "model".into();
+        state.agent_key = "test-key".into();
+        state.vnc_host = "host:5901".into();
+        state.vnc_password = "test-password".into();
+        state.zt_network = "0123456789abcdef".into();
+        state.connections = (0..3).map(|kind| state.connection(kind)).collect();
+        let settings = Settings::read(&Settings::of(&state).text()).unwrap();
+        let mut restored = State::default();
+        settings.apply(&mut restored);
+        assert_eq!(restored.connections, state.connections);
+        assert_eq!(restored.vnc_password, state.vnc_password);
+        assert_eq!(restored.agent_key, state.agent_key);
+        assert!(Settings::read("{}").unwrap().connections.is_empty());
     }
 }

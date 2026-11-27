@@ -35,6 +35,9 @@ impl Travel {
     /// Aim at `to` on a spring of `stiffness` and `damping`, as Material's
     /// fast spatial springs move a pressed switch.
     fn spring_to(&mut self, to: f32, now: u64, stiffness: f32, damping: f32) {
+        if (self.to - to).abs() < 0.001 && self.stiffness == stiffness && self.damping == damping {
+            return;
+        }
         let from = self.at(now).0;
         *self = Self { from, to, start: now, damping, stiffness };
     }
@@ -274,5 +277,20 @@ mod tests {
         assert!(cue.controls[1].1 < 1.0);
         motion.observe_controls(Screen::Mount, &[(first, false)], true);
         assert!(motion.cue().controls.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod spring_tests {
+    use super::*;
+    #[test]
+    fn unchanged_target_allows_the_spring_to_finish() {
+        let mut spring = Travel::rest();
+        spring.spring_to(1.0, 0, 800.0, 0.6);
+        for now in (16..2000).step_by(16) {
+            spring.spring_to(1.0, now, 800.0, 0.6);
+        }
+        assert_eq!(spring.start, 0);
+        assert!(spring.at(2000).1);
     }
 }

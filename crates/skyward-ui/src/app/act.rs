@@ -610,6 +610,7 @@ impl App {
                 let a = self.state.adding.as_mut().expect("the fields are on the page that adds a network");
                 if a.field != field {
                     a.field = field;
+                    self.edits += 1;
                     self.refresh();
                 }
             }
@@ -733,11 +734,41 @@ impl App {
             }
             Action::VncField(field) => {
                 self.state.vnc_field = field;
+                self.edits += 1;
                 self.refresh();
             }
             Action::VncPoint => {}
             Action::AgentField(field) => {
                 self.state.agent_field = field;
+                self.edits += 1;
+                self.refresh();
+            }
+            Action::SaveConnection(kind) => {
+                let current = self.state.connection(kind);
+                if !current.address.trim().is_empty() {
+                    if let Some(entry) = self.state.connections.iter_mut().find(|entry| entry.kind == kind && entry.address == current.address && entry.model == current.model) {
+                        *entry = current;
+                    } else {
+                        self.state.connections.push(current);
+                    }
+                    self.refresh();
+                }
+            }
+            Action::LoadConnection(index) => {
+                if let Some(entry) = self.state.connections.get(index).cloned() {
+                    self.state.load_connection(entry);
+                    self.edits += 1;
+                    self.refresh();
+                }
+            }
+            Action::DeleteConnection(kind) => {
+                let current = self.state.connection(kind);
+                self.state.connections.retain(|entry| !(entry.kind == kind && entry.address == current.address && entry.model == current.model));
+                self.refresh();
+            }
+            Action::NewConnection(kind) => {
+                self.state.load_connection(crate::settings::Connection { kind, address: String::new(), model: String::new(), secret: String::new() });
+                self.edits += 1;
                 self.refresh();
             }
             Action::AgentSend => return self.agent_send(),

@@ -222,6 +222,7 @@ pub struct State {
     /// How fast data went over the network joined in the last second.
     pub traffic: Traffic,
     /// The VNC address and password typed on that page. They are not saved.
+    pub connections: Vec<crate::settings::Connection>,
     pub vnc_host: String,
     pub vnc_password: String,
     /// 0 the address, 1 the password, 2 the remote desktop's keyboard.
@@ -349,6 +350,7 @@ impl Default for State {
             skyward_check: SkywardCheck::Idle,
             skyward_job: None,
             traffic: Traffic::default(),
+            connections: Vec::new(),
             vnc_host: String::new(),
             vnc_password: String::new(),
             vnc_field: 0,
@@ -444,6 +446,34 @@ impl State {
             Screen::SkywardUpdate => self.wlan.is_some() && self.recovery_partitions,
             Screen::Systems => self.dual_boot,
             _ => true,
+        }
+    }
+}
+
+impl State {
+    pub fn connection(&self, kind: u8) -> crate::settings::Connection {
+        let (address, model, secret) = match kind {
+            0 => (&self.agent_url, self.agent_model.clone(), &self.agent_key),
+            1 => (&self.vnc_host, String::new(), &self.vnc_password),
+            _ => (&self.zt_network, String::new(), &self.zt_network),
+        };
+        crate::settings::Connection { kind, address: address.clone(), model, secret: if kind == 2 { String::new() } else { secret.clone() } }
+    }
+
+    pub fn load_connection(&mut self, entry: crate::settings::Connection) {
+        match entry.kind {
+            0 => {
+                self.agent_url = entry.address;
+                self.agent_model = entry.model;
+                self.agent_key = entry.secret;
+                self.agent_field = 0;
+            }
+            1 => {
+                self.vnc_host = entry.address;
+                self.vnc_password = entry.secret;
+                self.vnc_field = 0;
+            }
+            _ => self.zt_network = entry.address,
         }
     }
 }
